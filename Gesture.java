@@ -1,10 +1,10 @@
 
 
 public class Gesture {
-    private Type type;
-    private int x;
-    private int y;
-    private double confidence;
+    private final Type type;
+    private final int x;
+    private final int y;
+    private final double confidence;
 
 
 
