@@ -1,216 +1,137 @@
 # Chapter 8 - MouseController
 
 **Audience**: Person B. **Time**: 1 hour.
+**You will write**: `MouseController.java`.
 
-Drive the OS mouse using `java.awt.Robot`. Handle screen mapping,
-mirroring (the webcam is a mirror image), exponential smoothing (to
-fight jitter), and click debouncing.
+Drive the OS cursor with `java.awt.Robot`. Handle screen mapping, the
+mirror flip, smoothing, and click debounce.
 
-## What you need to know about Robot
+Read `api-reference-2-robot.md` first if you haven't - this chapter
+assumes Robot, mouseMove, screen size, smoothing, and debounce are
+familiar.
 
-`java.awt.Robot` synthesizes input events at the OS level. The OS
-thinks a real mouse moved or clicked. It's built into the JDK.
+## Goal
 
-Constructor throws `AWTException` if Robot isn't supported on the
-platform (mostly never happens on Windows/Mac/Linux desktops).
+A class with a constructor (creates the Robot, queries screen size),
+`setFrameSize(w,h)`, `moveCursor(camX, camY)`, `leftClick()`,
+`rightClick()`.
 
-Key methods:
+---
 
-```java
-Robot r = new Robot();
-r.mouseMove(int x, int y);          // absolute screen coords
-r.mousePress(int buttons);          // bitmask of buttons to press
-r.mouseRelease(int buttons);
+## Methods recap
 
-// Button bitmasks (from java.awt.event.InputEvent):
-InputEvent.BUTTON1_DOWN_MASK        // left
-InputEvent.BUTTON2_DOWN_MASK        // middle
-InputEvent.BUTTON3_DOWN_MASK        // right
+- `new Robot()` throws `AWTException`
+- `robot.mouseMove(int screenX, int screenY)`
+- `robot.mousePress(InputEvent.BUTTON1_DOWN_MASK)` / `mouseRelease(...)`
+  (BUTTON3 for right)
+- `Toolkit.getDefaultToolkit().getScreenSize()` -> `Dimension` with
+  `.width`, `.height`
 
-// Screen size:
-Dimension d = Toolkit.getDefaultToolkit().getScreenSize();
-int w = d.width, h = d.height;
-```
+---
 
-## MouseController.java
+## The three formulas you'll implement
 
-`src/main/java/com/starkmouse/control/MouseController.java`:
-
-```java
-package com.starkmouse.control;
-
-import java.awt.AWTException;
-import java.awt.Dimension;
-import java.awt.Robot;
-import java.awt.Toolkit;
-import java.awt.event.InputEvent;
-
-/**
- * Drives the OS mouse via java.awt.Robot. Maps camera coords to
- * screen coords, mirrors x for intuitive feel, applies exponential
- * smoothing, debounces clicks.
- */
-public class MouseController {
-
-    private final Robot robot;
-    private int frameWidth = 640;
-    private int frameHeight = 480;
-    private final int screenWidth;
-    private final int screenHeight;
-
-    /** Smoothing factor 0..1 (higher = smoother but more lag). */
-    private static final double SMOOTHING = 0.6;
-    private double smoothedX;
-    private double smoothedY;
-
-    /** Min ms between clicks to avoid click storms. */
-    private static final long CLICK_DEBOUNCE_MS = 400;
-    private long lastClickTime = 0;
-
-    /** @throws AWTException if Robot is unavailable */
-    public MouseController() throws AWTException {
-        this.robot = new Robot();
-        Dimension screen = Toolkit.getDefaultToolkit().getScreenSize();
-        this.screenWidth = screen.width;
-        this.screenHeight = screen.height;
-        this.smoothedX = screenWidth / 2.0;
-        this.smoothedY = screenHeight / 2.0;
-    }
-
-    /**
-     * Tell the controller the camera dimensions for coord mapping.
-     * @param w camera width
-     * @param h camera height
-     */
-    public void setFrameSize(int w, int h) {
-        this.frameWidth = w;
-        this.frameHeight = h;
-    }
-
-    /**
-     * Move cursor based on camera coords. Mirrors x.
-     */
-    public void moveCursor(int cameraX, int cameraY) {
-        double mirroredX = frameWidth - cameraX;
-        double targetX = (mirroredX / frameWidth) * screenWidth;
-        double targetY = ((double) cameraY / frameHeight) * screenHeight;
-
-        smoothedX = smoothedX * SMOOTHING + targetX * (1.0 - SMOOTHING);
-        smoothedY = smoothedY * SMOOTHING + targetY * (1.0 - SMOOTHING);
-
-        robot.mouseMove((int) smoothedX, (int) smoothedY);
-    }
-
-    public void leftClick() {
-        if (!debounceOk()) return;
-        robot.mousePress(InputEvent.BUTTON1_DOWN_MASK);
-        robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK);
-    }
-
-    public void rightClick() {
-        if (!debounceOk()) return;
-        robot.mousePress(InputEvent.BUTTON3_DOWN_MASK);
-        robot.mouseRelease(InputEvent.BUTTON3_DOWN_MASK);
-    }
-
-    private boolean debounceOk() {
-        long now = System.currentTimeMillis();
-        if (now - lastClickTime < CLICK_DEBOUNCE_MS) return false;
-        lastClickTime = now;
-        return true;
-    }
-}
-```
-
-## Imports
-
-| Import | What |
-|--------|------|
-| `java.awt.AWTException` | thrown by `new Robot()` |
-| `java.awt.Dimension` | screen size return value |
-| `java.awt.Robot` | the input-synthesis API |
-| `java.awt.Toolkit` | gateway to `getScreenSize()` |
-| `java.awt.event.InputEvent` | button bitmask constants |
-
-All `java.awt` - it's the JDK's GUI toolkit, predates Swing.
-
-## Why mirror
-
-Webcam shows a mirror image. Moving your hand right -> the detected
-blob moves left in the image. So we flip x:
+**Mirror + map** (camera coords -> screen coords):
 
 ```
-mirroredX = frameWidth - cameraX;
+mirroredX = frameWidth - camX
+screenX   = mirroredX / frameWidth  * screenWidth
+screenY   = camY      / frameHeight * screenHeight
 ```
 
-After this, hand right -> cursor right.
+(Cast to double in the division or you'll get integer-division zeros.)
 
-## Why smoothing
-
-The detected centroid wiggles by 1-2 px every frame even when your
-hand is still. Direct mapping makes the cursor twitchy.
-
-Exponential smoothing blends the new target with the previous smoothed
-position:
+**Smoothing** (kill jitter):
 
 ```
-smoothed = smoothed * 0.6 + target * 0.4
+smoothedX = smoothedX * 0.6 + screenX * 0.4
 ```
 
-0.6 = "60% of where I was, 40% of where I want to be." After ~5 frames
-the cursor catches up. Tradeoff: smaller smoothing = more responsive
-but jittery; larger = smoother but laggy. 0.6 is the sweet spot.
+**Debounce** (kill click storms):
 
-## Why debounce
+```
+if (now - lastClick < 400ms) skip; else click and set lastClick = now
+```
 
-Without debounce, every frame a 2-finger gesture is detected fires a
-click. At 30 FPS that's 30 clicks/sec. Catastrophic.
+---
 
-`debounceOk()` returns false if less than 400ms has passed since the
-last click. So a held 2-finger gesture clicks once, not 30 times.
+## Now build it
+
+Create `src/main/java/com/starkmouse/control/MouseController.java`.
+
+### Fields
+
+- `private final Robot robot`
+- `private int frameWidth = 640, frameHeight = 480` (defaults; updated
+  via setFrameSize)
+- `private final int screenWidth, screenHeight` (set in constructor)
+- `private static final double SMOOTHING = 0.6`
+- `private double smoothedX, smoothedY` (init to screen center)
+- `private static final long CLICK_DEBOUNCE_MS = 400`
+- `private long lastClickTime = 0`
+
+### Constructor: `MouseController() throws AWTException`
+
+1. `robot = new Robot();` (let the exception propagate - callers handle it)
+2. Get screen size from Toolkit, store width/height.
+3. Init smoothedX/Y to screen center (screenWidth/2.0, screenHeight/2.0).
+
+### setFrameSize(int w, int h)
+
+Store w and h into frameWidth/frameHeight.
+
+### moveCursor(int camX, int camY)
+
+1. Compute mirroredX, targetX, targetY using the formulas above (mind
+   the double casts).
+2. Update smoothedX/Y with the smoothing formula.
+3. `robot.mouseMove((int) smoothedX, (int) smoothedY)`.
+
+### leftClick() / rightClick()
+
+Each: if `!debounceOk()` return; else press+release the right button
+mask.
+
+### private boolean debounceOk()
+
+Implement the debounce formula. Returns true and updates lastClickTime
+if enough time passed, else false.
+
+### Imports
+
+| Import | For |
+|--------|-----|
+| `java.awt.AWTException` | constructor throws |
+| `java.awt.Dimension` | screen size |
+| `java.awt.Robot` | the API |
+| `java.awt.Toolkit` | getScreenSize |
+| `java.awt.event.InputEvent` | button masks |
+
+---
 
 ## Test
 
-Quick standalone main:
-
 ```java
-public static void main(String[] args) throws Exception {
-    MouseController mc = new MouseController();
-    long start = System.currentTimeMillis();
-    while (System.currentTimeMillis() - start < 5000) {
-        double t = (System.currentTimeMillis() - start) / 1000.0;
-        int x = (int)(600 + 200 * Math.cos(t * 2));
-        int y = (int)(400 + 200 * Math.sin(t * 2));
-        // Bypass smoothing by passing screen-space coords through
-        // setFrameSize(screenWidth, screenHeight) trick
-        mc.setFrameSize(mc.getClass().getDeclaredField("screenWidth")
-            .getInt(mc), mc.getClass().getDeclaredField("screenHeight")
-            .getInt(mc));
-        mc.moveCursor(x, y);
-        Thread.sleep(16);
-    }
+MouseController mc = new MouseController();
+mc.setFrameSize(1920, 1080);   // pretend camera == screen for a 1:1 test
+long start = System.currentTimeMillis();
+while (System.currentTimeMillis() - start < 5000) {
+    double t = (System.currentTimeMillis() - start) / 1000.0;
+    int x = (int)(960 + 200 * Math.cos(t * 2));
+    int y = (int)(540 + 200 * Math.sin(t * 2));
+    mc.moveCursor(1920 - x, y);   // feed inverted x since moveCursor mirrors
+    Thread.sleep(16);
 }
 ```
 
-That reflection is ugly - just do this simpler test:
+Cursor traces a smooth circle for 5 seconds.
 
-```java
-public static void main(String[] args) throws Exception {
-    MouseController mc = new MouseController();
-    // Pretend the camera is the same size as the screen so mapping is 1:1
-    mc.setFrameSize(1920, 1080);
-    long start = System.currentTimeMillis();
-    while (System.currentTimeMillis() - start < 5000) {
-        double t = (System.currentTimeMillis() - start) / 1000.0;
-        int x = (int)(960 + 200 * Math.cos(t * 2));
-        int y = (int)(540 + 200 * Math.sin(t * 2));
-        // mirror happens inside, so feed inverted x
-        mc.moveCursor(1920 - x, y);
-        Thread.sleep(16);
-    }
-}
-```
+## Checklist
 
-Cursor goes in a circle for 5 seconds. Try not to fight it.
+- [ ] Constructor declares `throws AWTException`
+- [ ] moveCursor mirrors, maps, smooths
+- [ ] Double casts in the division (no integer-division bug)
+- [ ] Clicks debounce
+- [ ] Javadoc everywhere
 
 Commit: `add MouseController`. Move to chapter 9.

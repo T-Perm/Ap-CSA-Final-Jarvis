@@ -1,201 +1,167 @@
-# Chapter 11 - Main loop and threading
+# Chapter 11 - MainApp + the capture loop
 
-**Audience**: both, mostly Person B. **Time**: 1 hour.
+**Audience**: both, mostly Person B. **Time**: 1-1.5 hours.
+**You will write**: the real `MainApp.java` (replacing the skeleton).
 
-Wire everything together in `MainApp`. The capture-detect-act loop
-runs on its own thread.
+This wires every class together and runs the capture-detect-act loop
+on a background thread.
 
-## Threading rules
+Read the threading section of `api-reference-4` first (Thread, volatile,
+Thread.sleep, invokeLater, the EDT rule).
 
-Java GUI rule: anything that touches Swing components must run on the
-Event Dispatch Thread (EDT). Use `SwingUtilities.invokeLater`.
+## Goal
 
-The capture loop is heavy work (grabbing frames, running detection) so
-it goes on its own background thread. It can call `setEnabled(...)`
-and similar setters on UI controllers because those just store values.
+`main` loads OpenCV, then on the EDT builds the controllers and starts
+a background loop that grabs frames, detects gestures, applies them,
+and updates the tray.
 
-## MainApp.java
+---
 
-`src/main/java/com/starkmouse/app/MainApp.java` (replace the skeleton):
+## Concept: the EDT and where things run
 
-```java
-package com.starkmouse.app;
+- Swing/AWT objects (tray, later the scratchpad window) should be set
+  up on the Event Dispatch Thread. Use
+  `SwingUtilities.invokeLater(() -> ...)` from `main`.
+- The capture loop is heavy and must NOT run on the EDT or it freezes
+  the UI. It runs on its own `Thread`.
+- The loop is allowed to call your controllers' methods (moveCursor,
+  setState, etc.) because those don't block the EDT.
 
-import com.starkmouse.control.GestureMapper;
-import com.starkmouse.control.HotkeyController;
-import com.starkmouse.control.MouseController;
-import com.starkmouse.control.TrayController;
-import com.starkmouse.control.TrayController.IconState;
-import com.starkmouse.detection.ColorBlobDetector;
-import com.starkmouse.detection.Gesture;
-import com.starkmouse.detection.GestureDetector;
-import com.starkmouse.detection.HandContourDetector;
-import com.starkmouse.input.CameraInput;
-import com.starkmouse.scratchpad.ScratchpadController;
-import nu.pattern.OpenCV;
-import org.opencv.core.Mat;
+---
 
-import javax.swing.SwingUtilities;
-import java.awt.AWTException;
+## Concept: starting OpenCV first
 
-/**
- * Entry point. Owns the background capture-detect-act loop, the tray,
- * and the global hotkey.
- */
-public class MainApp {
+`OpenCV.loadLocally()` must run before any OpenCV class is used. Put it
+as the very first line of `main`, before `invokeLater`.
 
-    private final CameraInput camera = new CameraInput(0);
-    private final GestureDetector[] detectors = {
-        new ColorBlobDetector(),
-        new HandContourDetector()
-    };
-    private int detectorIndex = 0;
-    private MouseController mouse;
-    private ScratchpadController scratchpad;
-    private GestureMapper mapper;
-    private final TrayController tray = new TrayController();
-    private HotkeyController hotkey;
+---
 
-    private Thread loopThread;
-    private volatile boolean running = false;
+## Concept: daemon thread + volatile flag
 
-    public static void main(String[] args) {
-        OpenCV.loadLocally();
-        SwingUtilities.invokeLater(() -> new MainApp().launch());
-    }
+The loop runs in a `Thread` you start. Mark it daemon so it dies with
+the app. Control it with a `volatile boolean running` so the loop sees
+when you set it false during shutdown. (Both covered in api-reference-4.)
 
-    private void launch() {
-        try {
-            mouse = new MouseController();
-        } catch (AWTException e) {
-            System.err.println("Robot unavailable, cannot continue.");
-            return;
-        }
+---
 
-        scratchpad = new ScratchpadController();   // stub for now
-        mapper = new GestureMapper(mouse, scratchpad);
+## Build MainApp.java
 
-        if (!tray.install()) {
-            System.err.println("Tray unavailable. App will exit silently on Ctrl+C.");
-        }
-        tray.onExit(this::shutdown);
-        tray.setState(IconState.ACTIVE);
+Replace `src/main/java/com/starkmouse/app/MainApp.java`.
 
-        hotkey = new HotkeyController(() -> {
-            mapper.setEnabled(!mapper.isEnabled());
-            tray.setState(mapper.isEnabled() ? IconState.ACTIVE : IconState.PAUSED);
-            tray.notify("Stark Mouse", mapper.isEnabled() ? "Active" : "Paused");
-        });
-        hotkey.install();
+### Fields
 
-        startLoop();
-    }
+- `CameraInput camera = new CameraInput(0)`
+- `GestureDetector[] detectors` containing `new ColorBlobDetector()` and
+  `new HandContourDetector()`
+- `int detectorIndex = 0`
+- `MouseController mouse` (set in launch)
+- `ScratchpadController scratchpad` (the stub for now)
+- `GestureMapper mapper` (set in launch)
+- `TrayController tray = new TrayController()`
+- `HotkeyController hotkey` (set in launch)
+- `Thread loopThread`
+- `volatile boolean running = false`
 
-    private GestureDetector detector() {
-        return detectors[detectorIndex];
-    }
+Add a private helper `GestureDetector detector()` returning
+`detectors[detectorIndex]` (so F1/F2 switching takes effect next frame).
 
-    private void startLoop() {
-        camera.start();
-        // Tell mouse the camera frame size for coord mapping
-        Mat first = camera.grabFrame();
-        if (first != null) {
-            mouse.setFrameSize(first.cols(), first.rows());
-        }
+### main(String[] args)
 
-        running = true;
-        loopThread = new Thread(this::loop, "stark-mouse-loop");
-        loopThread.setDaemon(true);
-        loopThread.start();
-    }
+1. `OpenCV.loadLocally();`
+2. `SwingUtilities.invokeLater(() -> new MainApp().launch());`
 
-    private void loop() {
-        while (running) {
-            Mat frame = camera.grabFrame();
-            if (frame == null) {
-                sleep(30);
-                continue;
-            }
-            Gesture g = detector().detect(frame);
-            mapper.apply(g);
+### launch()
 
-            // tray feedback - subtle "is the camera seeing my hand?"
-            if (g.getType() != Gesture.Type.NONE) {
-                tray.setState(IconState.ACTIVE);
-            }
+1. Create the MouseController in a try/catch (AWTException). On failure,
+   print an error and return.
+2. Create the ScratchpadController stub.
+3. Create the GestureMapper(mouse, scratchpad).
+4. `tray.install()`; if it returns false, warn but continue.
+5. `tray.onExit(this::shutdown)` so the Exit menu runs your shutdown.
+6. `tray.setState(ACTIVE)`.
+7. Create the HotkeyController with a callback that: flips
+   `mapper.setEnabled(!mapper.isEnabled())`, updates the tray icon
+   (ACTIVE/PAUSED), and shows a notification. Then `hotkey.install()`.
+8. `startLoop()`.
 
-            sleep(15);  // cap at ~60 FPS
-        }
-    }
+### startLoop()
 
-    private void sleep(long ms) {
-        try { Thread.sleep(ms); } catch (InterruptedException ignored) { }
-    }
+1. `camera.start()`.
+2. Grab one frame; if non-null, `mouse.setFrameSize(frame.cols(),
+   frame.rows())` so cursor mapping uses the real resolution.
+3. `running = true`.
+4. Create `loopThread = new Thread(this::loop, "stark-mouse-loop")`,
+   `setDaemon(true)`, `start()`.
 
-    private void shutdown() {
-        running = false;
-        try { if (loopThread != null) loopThread.join(500); }
-        catch (InterruptedException ignored) { }
-        if (hotkey != null) hotkey.remove();
-        camera.stop();
-        tray.remove();
-        System.exit(0);
-    }
-}
-```
+### loop()
 
-## Imports
+While `running`:
+1. `Mat frame = camera.grabFrame()`; if null, `sleep(30)` and continue.
+2. `Gesture g = detector().detect(frame)`.
+3. `mapper.apply(g)`.
+4. If `g.getType() != NONE`, `tray.setState(ACTIVE)` (subtle "I see your
+   hand" feedback).
+5. `sleep(15)` to cap ~60 FPS.
 
-| Import | What |
-|--------|------|
-| `com.starkmouse.*` | your own classes |
-| `nu.pattern.OpenCV` | `loadLocally()` for native libs |
-| `org.opencv.core.Mat` | frame type for setFrameSize |
-| `javax.swing.SwingUtilities` | `invokeLater` to hop to EDT |
-| `java.awt.AWTException` | from `new MouseController()` |
+### sleep(long ms)
 
-## Things to notice
+A helper wrapping `Thread.sleep` in a try/catch (swallow the
+InterruptedException) so the loop stays readable.
 
-**`OpenCV.loadLocally()` is called BEFORE `invokeLater`.** Native libs
-load early. Subsequent code can use OpenCV classes freely.
+### shutdown()
 
-**`SwingUtilities.invokeLater(() -> new MainApp().launch())`**: starts
-the app on the EDT. Construction and tray/hotkey install happen there.
+1. `running = false`.
+2. `loopThread.join(500)` in a try/catch (wait for the loop to stop).
+3. `hotkey.remove()`, `camera.stop()`, `tray.remove()`.
+4. `System.exit(0)`.
 
-**The loop runs on its own daemon thread.** `setDaemon(true)` means
-when the main thread dies, the loop dies too (no need to manually stop).
+### Imports
 
-**`volatile boolean running`**: `volatile` ensures the loop thread sees
-the change when shutdown sets `running = false`. Without it the JVM
-might cache the value and never exit.
+Your own classes (`com.starkmouse.*`), plus:
 
-**`camera.grabFrame()` returning a shared Mat**: as noted in chapter 5,
-the Mat is reused. We don't hold onto it past one loop iteration.
-Detection processes it immediately, then we move on.
+| Import | For |
+|--------|-----|
+| `nu.pattern.OpenCV` | loadLocally |
+| `org.opencv.core.Mat` | the frame |
+| `javax.swing.SwingUtilities` | invokeLater |
+| `java.awt.AWTException` | from MouseController constructor |
 
-## Test
+(`TrayController.IconState` - import the nested enum or qualify it.)
+
+---
+
+## Test - this is your MVP
 
 ```
 mvn package
 java -jar target/stark-mouse-1.0.0-jar-with-dependencies.jar
 ```
 
-- Tray icon appears (cyan dot)
-- Hold up orange marker - cursor follows
-- Press Ctrl+Shift+G - icon goes gray, cursor stops following
-- Press again - icon goes orange, cursor follows again
-- Right-click tray, Exit
+- Tray icon appears (cyan dot).
+- Hold orange marker -> cursor follows.
+- Ctrl+Shift+G -> icon gray, cursor frozen; again -> orange, resumes.
+- Right-click tray -> Exit -> clean quit.
 
-This is your minimum viable demo. If this works, you have a project
-to submit even if the scratchpad falls through.
+If this works you have a submittable project. Tag it:
+
+```
+git tag mvp-mouse && git push origin mvp-mouse
+```
 
 ## Common errors
 
-- **`UnsatisfiedLinkError`** when running: VC++ redist not installed.
-- **App doesn't quit when window is closed**: there's no window. Use
-  tray Exit menu, or kill the process.
-- **Cursor flies to one corner**: `setFrameSize` was wrong. Camera
-  resolution might not be 640x480. Print `first.cols(), first.rows()`
-  to confirm.
+- Cursor flies to a corner -> wrong frame size; print
+  `frame.cols()/rows()` and confirm setFrameSize got real values.
+- `UnsatisfiedLinkError` -> VC++ redist missing (chapter 1).
+- App won't quit -> hotkey not unregistered; check shutdown order.
+
+## Checklist
+
+- [ ] OpenCV.loadLocally is the first line of main
+- [ ] UI setup on the EDT via invokeLater
+- [ ] Loop on a daemon thread, controlled by volatile running
+- [ ] setFrameSize uses real camera resolution
+- [ ] Clean shutdown
+- [ ] Javadoc everywhere
 
 Commit: `wire main loop, end-to-end MVP`. Move to chapter 12.

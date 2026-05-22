@@ -1,394 +1,201 @@
 # Chapter 14 - $1 Unistroke Recognizer
 
 **Audience**: Person A. **Time**: 4-6 hours.
+**You will write**: `Recognizer.java`, `RecognitionResult.java`,
+`Template.java`, `DollarOneRecognizer.java`.
 
-The recognition algorithm. Implements the 2007 paper by Wobbrock, Wilson,
-Li. Five steps: resample, rotate, scale, translate, compare.
+The recognition algorithm, from the 2007 Wobbrock/Wilson/Li paper. Five
+steps: resample, rotate, scale, translate, compare. No machine learning.
 
-This is the longest chapter. Worth it - on demo day "we implemented
-the $1 Recognizer from the paper, no ML libraries" is the strongest
-single answer you can give.
+This is the longest build in the project. Implement each step as its
+own method and test it before moving on.
 
-## Recognizer.java (interface)
+## The big picture
 
-`src/main/java/com/starkmouse/scratchpad/Recognizer.java`:
+Two strokes of the same letter look different (size, rotation, position,
+speed). The four normalization steps transform any stroke into a
+canonical 64-point form so that same-letter strokes become nearly
+identical. Then comparison is just averaging point-to-point distances.
 
-```java
-package com.starkmouse.scratchpad;
+---
 
-/**
- * Strategy for recognizing a stroke as a letter or symbol.
- */
-public interface Recognizer {
-    /**
-     * @param stroke the input stroke
-     * @return best match plus alternates, or RecognitionResult.unknown()
-     *         if no good match
-     */
-    RecognitionResult recognize(Stroke stroke);
-}
-```
+## The supporting types (build these first - they're easy)
 
-## RecognitionResult.java
+### Recognizer.java (interface)
 
-`src/main/java/com/starkmouse/scratchpad/RecognitionResult.java`:
+`src/main/java/com/starkmouse/scratchpad/Recognizer.java`. One method:
+`RecognitionResult recognize(Stroke stroke)`. Same interface-for-
+swappability idea as GestureDetector.
 
-```java
-package com.starkmouse.scratchpad;
+### RecognitionResult.java
 
-import java.util.Collections;
-import java.util.List;
+`src/main/java/com/starkmouse/scratchpad/RecognitionResult.java`.
 
-/**
- * The outcome of recognizing a stroke.
- */
-public class RecognitionResult {
+A nested static class `Alternate` holding a `char letter` and `double
+confidence` (public final fields are fine here).
 
-    public static class Alternate {
-        public final char letter;
-        public final double confidence;
-        public Alternate(char letter, double confidence) {
-            this.letter = letter;
-            this.confidence = confidence;
-        }
-    }
+Fields: `char predictedLetter`, `double confidence`, `List<Alternate>
+alternates`.
 
-    private final char predictedLetter;
-    private final double confidence;
-    private final List<Alternate> alternates;
+A static factory `unknown()` returning a result with letter `'?'`,
+confidence 0, empty alternates list. Getters for the three fields.
 
-    public RecognitionResult(char letter, double confidence, List<Alternate> alternates) {
-        this.predictedLetter = letter;
-        this.confidence = confidence;
-        this.alternates = alternates == null
-            ? Collections.emptyList()
-            : Collections.unmodifiableList(alternates);
-    }
+### Template.java
 
-    public static RecognitionResult unknown() {
-        return new RecognitionResult('?', 0.0, Collections.emptyList());
-    }
+`src/main/java/com/starkmouse/scratchpad/Template.java`. Holds a `char
+letter` and a `List<Point> normalizedPoints` (the 64-point canonical
+form of one training example). Constructor + getters.
 
-    public char getPredictedLetter() { return predictedLetter; }
-    public double getConfidence() { return confidence; }
-    public List<Alternate> getAlternates() { return alternates; }
-}
-```
+---
 
-## Template.java
+## Concept: each normalization step
 
-`src/main/java/com/starkmouse/scratchpad/Template.java`:
+Study these. You'll implement each as a `static List<Point>` method
+that takes points and returns transformed points (pure functions - don't
+mutate the input).
+
+### Step 1: resample to N points (N = 64)
+
+Your raw stroke has uneven spacing. Walk along the path; every time
+you've traveled `pathLength / (N-1)` units, drop a new point
+(interpolating between the two original points you're between). End
+with exactly N points.
+
+The interpolation when you cross the interval between points `prev` and
+`cur`: fraction `t = (interval - accumulated) / distance(prev, cur)`,
+new point at `prev + t * (cur - prev)` on each axis.
+
+Tiny illustration of interpolation (not the full method):
 
 ```java
-package com.starkmouse.scratchpad;
-
-import java.awt.Point;
-import java.util.Collections;
-import java.util.List;
-
-/**
- * A learned letter template. Stores the normalized 64-point version
- * of one example stroke.
- */
-public class Template {
-    private final char letter;
-    private final List<Point> normalizedPoints;
-
-    public Template(char letter, List<Point> normalizedPoints) {
-        this.letter = letter;
-        this.normalizedPoints = Collections.unmodifiableList(normalizedPoints);
-    }
-
-    public char getLetter() { return letter; }
-    public List<Point> getPoints() { return normalizedPoints; }
-}
+double t = 0.4;
+int nx = (int)Math.round(prev.x + t * (cur.x - prev.x));
+int ny = (int)Math.round(prev.y + t * (cur.y - prev.y));
 ```
 
-## DollarOneRecognizer.java
+Watch out: floating-point rounding can leave you one point short; after
+the loop, if you have < N points, append copies of the last point.
 
-The big one. `src/main/java/com/starkmouse/scratchpad/DollarOneRecognizer.java`:
+### Step 2: rotate to a canonical angle
+
+Find the "indicative angle" = angle from the centroid to the first
+point: `Math.atan2(first.y - centroid.y, first.x - centroid.x)` (or the
+reverse sign - be consistent). Rotate ALL points around the centroid by
+the negative of that angle, so the first point lands on the +x axis.
+
+Rotation of a point around center `c` by angle `a`:
 
 ```java
-package com.starkmouse.scratchpad;
-
-import java.awt.Point;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
-
-/**
- * The $1 Unistroke Recognizer (Wobbrock, Wilson, Li, 2007).
- *
- * Five steps:
- *   1. Resample to N evenly-spaced points
- *   2. Rotate so first-to-centroid vector points to 0 degrees
- *   3. Scale to a SQUARE_SIZE x SQUARE_SIZE bounding box
- *   4. Translate so centroid is at origin
- *   5. Compare to each template, return the closest match
- */
-public class DollarOneRecognizer implements Recognizer {
-
-    /** Number of points all strokes are resampled to. */
-    private static final int N = 64;
-    /** Side length of the bounding square after scaling. */
-    private static final double SQUARE_SIZE = 250.0;
-    /** Confidence below which we say "?". */
-    private static final double MIN_CONFIDENCE = 0.5;
-
-    /** Diagonal of the square - used in confidence calculation. */
-    private static final double HALF_DIAGONAL = 0.5 * Math.sqrt(SQUARE_SIZE * SQUARE_SIZE * 2);
-
-    private final TemplateLibrary library;
-
-    public DollarOneRecognizer(TemplateLibrary library) {
-        this.library = library;
-    }
-
-    @Override
-    public RecognitionResult recognize(Stroke stroke) {
-        if (stroke.size() < 5) return RecognitionResult.unknown();
-
-        List<Point> normalized = normalize(stroke.getPoints());
-
-        List<RecognitionResult.Alternate> scores = new ArrayList<>();
-        for (Template t : library.getAll()) {
-            double d = pathDistance(normalized, t.getPoints());
-            double score = 1.0 - (d / HALF_DIAGONAL);
-            scores.add(new RecognitionResult.Alternate(t.getLetter(), score));
-        }
-        scores.sort(Comparator.comparingDouble((RecognitionResult.Alternate a) -> a.confidence).reversed());
-
-        if (scores.isEmpty() || scores.get(0).confidence < MIN_CONFIDENCE) {
-            return RecognitionResult.unknown();
-        }
-
-        RecognitionResult.Alternate best = scores.get(0);
-        List<RecognitionResult.Alternate> alts = new ArrayList<>();
-        for (int i = 1; i < Math.min(4, scores.size()); i++) alts.add(scores.get(i));
-        return new RecognitionResult(best.letter, best.confidence, alts);
-    }
-
-    /**
-     * Run all 4 normalization steps. Pure function: doesn't mutate input.
-     */
-    public static List<Point> normalize(List<Point> raw) {
-        List<Point> resampled = resample(raw, N);
-        double angle = indicativeAngle(resampled);
-        List<Point> rotated = rotateBy(resampled, -angle);
-        List<Point> scaled = scaleToSquare(rotated, SQUARE_SIZE);
-        return translateToOrigin(scaled);
-    }
-
-    /**
-     * Step 1: resample to n evenly-spaced points along the path.
-     */
-    private static List<Point> resample(List<Point> points, int n) {
-        double interval = pathLength(points) / (n - 1);
-        double accumulated = 0;
-        List<Point> result = new ArrayList<>();
-        result.add(points.get(0));
-
-        // Walk along the path, dropping a new point every `interval` units.
-        // We may need to split between consecutive original points.
-        List<Point> working = new ArrayList<>(points);
-        for (int i = 1; i < working.size(); i++) {
-            Point prev = working.get(i - 1);
-            Point cur = working.get(i);
-            double d = distance(prev, cur);
-            if (accumulated + d >= interval) {
-                double t = (interval - accumulated) / d;
-                int newX = (int) Math.round(prev.x + t * (cur.x - prev.x));
-                int newY = (int) Math.round(prev.y + t * (cur.y - prev.y));
-                Point pt = new Point(newX, newY);
-                result.add(pt);
-                working.add(i, pt);   // insert and continue from the new point
-                accumulated = 0;
-            } else {
-                accumulated += d;
-            }
-        }
-        // Floating-point rounding may leave us 1 short - top up.
-        while (result.size() < n) {
-            result.add(working.get(working.size() - 1));
-        }
-        return result;
-    }
-
-    /**
-     * Step 2 prep: angle from centroid to first point.
-     */
-    private static double indicativeAngle(List<Point> points) {
-        Point c = centroid(points);
-        Point first = points.get(0);
-        return Math.atan2(c.y - first.y, c.x - first.x);
-    }
-
-    /**
-     * Step 2: rotate all points around the centroid by `angle` radians.
-     */
-    private static List<Point> rotateBy(List<Point> points, double angle) {
-        Point c = centroid(points);
-        double cos = Math.cos(angle);
-        double sin = Math.sin(angle);
-        List<Point> out = new ArrayList<>(points.size());
-        for (Point p : points) {
-            double dx = p.x - c.x;
-            double dy = p.y - c.y;
-            int nx = (int) Math.round(dx * cos - dy * sin + c.x);
-            int ny = (int) Math.round(dx * sin + dy * cos + c.y);
-            out.add(new Point(nx, ny));
-        }
-        return out;
-    }
-
-    /**
-     * Step 3: scale x and y independently so bounding box is size x size.
-     */
-    private static List<Point> scaleToSquare(List<Point> points, double size) {
-        int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE;
-        int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE;
-        for (Point p : points) {
-            if (p.x < minX) minX = p.x;
-            if (p.x > maxX) maxX = p.x;
-            if (p.y < minY) minY = p.y;
-            if (p.y > maxY) maxY = p.y;
-        }
-        double w = Math.max(1, maxX - minX);
-        double h = Math.max(1, maxY - minY);
-        List<Point> out = new ArrayList<>(points.size());
-        for (Point p : points) {
-            int nx = (int) Math.round((p.x - minX) * (size / w));
-            int ny = (int) Math.round((p.y - minY) * (size / h));
-            out.add(new Point(nx, ny));
-        }
-        return out;
-    }
-
-    /**
-     * Step 4: translate so centroid is at origin.
-     */
-    private static List<Point> translateToOrigin(List<Point> points) {
-        Point c = centroid(points);
-        List<Point> out = new ArrayList<>(points.size());
-        for (Point p : points) {
-            out.add(new Point(p.x - c.x, p.y - c.y));
-        }
-        return out;
-    }
-
-    /**
-     * Step 5: average pairwise distance between two normalized strokes.
-     */
-    public static double pathDistance(List<Point> a, List<Point> b) {
-        int n = Math.min(a.size(), b.size());
-        double sum = 0;
-        for (int i = 0; i < n; i++) sum += distance(a.get(i), b.get(i));
-        return sum / n;
-    }
-
-    // helpers
-
-    private static double pathLength(List<Point> points) {
-        double total = 0;
-        for (int i = 1; i < points.size(); i++) {
-            total += distance(points.get(i - 1), points.get(i));
-        }
-        return total;
-    }
-
-    private static Point centroid(List<Point> points) {
-        long sx = 0, sy = 0;
-        for (Point p : points) { sx += p.x; sy += p.y; }
-        return new Point((int)(sx / points.size()), (int)(sy / points.size()));
-    }
-
-    private static double distance(Point a, Point b) {
-        double dx = a.x - b.x, dy = a.y - b.y;
-        return Math.sqrt(dx * dx + dy * dy);
-    }
-}
+double dx = p.x - c.x, dy = p.y - c.y;
+int nx = (int)Math.round(dx*Math.cos(a) - dy*Math.sin(a) + c.x);
+int ny = (int)Math.round(dx*Math.sin(a) + dy*Math.cos(a) + c.y);
 ```
 
-## Imports
+### Step 3: scale to a square
 
-| Import | What |
-|--------|------|
-| `java.awt.Point` | 2D point |
-| `java.util.ArrayList`, `Comparator`, `List` | collections |
+Find the bounding box (min/max x and y). Scale x by `SIZE/boxWidth` and
+y by `SIZE/boxHeight` independently (SIZE = 250) so the stroke fills a
+250x250 box regardless of original size. Guard against zero width/height
+(use `Math.max(1, ...)`).
 
-That's it. No machine learning. No external libraries. Pure geometry.
+### Step 4: translate to origin
 
-## What each step is doing
+Compute the centroid, subtract it from every point so the centroid sits
+at (0,0).
 
-**Step 1 - Resample**: your stroke might have 50 points (slow draw) or
-500 points (fast draw). After resample both have exactly 64 evenly-
-spaced points. Now we can compare them pointwise.
+### Step 5: compare (path distance)
 
-**Step 2 - Rotate**: a slanted A and an upright A look different unless
-we rotate both to a canonical orientation. We rotate so the
-"first point -> centroid" vector points along the x-axis.
+Given two normalized 64-point lists, sum the Euclidean distance between
+corresponding points (a[0]-b[0], a[1]-b[1], ...) and divide by N. Lower
+= more similar.
 
-**Step 3 - Scale**: a tiny A and a huge A look different unless we
-scale both to the same size. Scale x and y to fit a 250x250 box.
+---
 
-**Step 4 - Translate**: a top-left A and a bottom-right A look
-different in absolute pixels. Translate so centroid is at (0,0).
+## Helpers you'll need
 
-After steps 1-4, **two strokes of the same letter look almost identical**
-regardless of size, rotation, position, or speed of drawing. That's the
-magic.
+Write these small `static` helpers (used by the steps above):
 
-**Step 5 - Compare**: just sum up the per-point distance between input
-and template, divide by 64. The template with the smallest average
-distance is the prediction.
+- `double pathLength(List<Point>)` - sum of distances between
+  consecutive points
+- `Point centroid(List<Point>)` - average x, average y
+- `double distance(Point, Point)` - Euclidean
+- (a `boundingBox` is just inline min/max in step 3)
 
-## Confidence
+---
 
-Distance ranges from 0 (perfect match) to roughly the half-diagonal of
-the bounding box. We convert to a 0..1 score:
+## Build DollarOneRecognizer.java
 
-```
-score = 1.0 - (distance / halfDiagonal)
-```
+`src/main/java/com/starkmouse/scratchpad/DollarOneRecognizer.java`
+implementing `Recognizer`.
 
-If the best score is below 0.5, we say "?" instead of guessing.
+### Constants
 
-## Test (without templates yet)
+`N = 64`, `SQUARE_SIZE = 250.0`, `MIN_CONFIDENCE = 0.5`, and a
+`HALF_DIAGONAL = 0.5 * Math.sqrt(SIZE*SIZE*2)` used to turn distance
+into a 0..1 confidence.
 
-Hard to test in isolation since we need templates. Skip ahead to
-chapter 15 to add templates, then come back here.
+### Field
 
-Quick sanity test on normalize:
+A `TemplateLibrary library` (next chapter) passed in the constructor.
+For now you can stub the library or build chapter 15 first - your call.
+
+### A public static normalize(List<Point> raw)
+
+Runs steps 1-4 in order and returns the canonical points. Make it
+`public static` so the calibration tool (ch15) can normalize training
+examples with the same code.
+
+### recognize(Stroke stroke)
+
+1. If `stroke.size() < 5`, return `RecognitionResult.unknown()`.
+2. `normalize` the stroke's points.
+3. For each template in the library: compute `pathDistance` to the
+   normalized input, convert to a score `1.0 - distance/HALF_DIAGONAL`.
+   Collect (letter, score) pairs.
+4. Sort by score descending.
+5. If empty or best score < MIN_CONFIDENCE, return `unknown()`.
+6. Build a `RecognitionResult` with the best letter+score and the next
+   2-3 as alternates.
+
+### Imports
+
+`java.awt.Point`, `java.util.ArrayList`, `java.util.List`,
+`java.util.Comparator` (for sorting).
+
+---
+
+## Test each step in isolation FIRST
+
+Before testing recognition, test normalize on a known shape:
 
 ```java
-public static void main(String[] args) {
-    List<Point> raw = new ArrayList<>();
-    raw.add(new Point(0, 0));
-    raw.add(new Point(100, 0));
-    raw.add(new Point(100, 100));
-    List<Point> n = DollarOneRecognizer.normalize(raw);
-    System.out.println("normalized has " + n.size() + " points");
-    // Should print 64
-}
+List<Point> raw = new ArrayList<>();
+raw.add(new Point(0,0));
+raw.add(new Point(100,0));
+raw.add(new Point(100,100));
+List<Point> n = DollarOneRecognizer.normalize(raw);
+System.out.println(n.size());   // must be exactly 64
 ```
+
+If it's not 64, your resample top-up is wrong. Fix that before anything
+else - every later step assumes 64 points.
+
+Sanity-check rotate/scale/translate by printing the centroid after
+translate (should be ~0,0) and the bounding box after scale (should be
+~250x250).
+
+Full recognition test comes after chapter 15 gives you templates.
+
+## Checklist
+
+- [ ] normalize always returns exactly 64 points
+- [ ] Each step is its own pure static method
+- [ ] After translate, centroid ~ (0,0)
+- [ ] Confidence is 0..1
+- [ ] Returns unknown() below threshold
+- [ ] Javadoc everywhere
+
+This is the rubric kill move - "implemented from the paper, no ML."
+Make sure you can explain all five steps verbally.
 
 Commit: `add $1 Recognizer`. Move to chapter 15.
-
-## Why this is the rubric kill move
-
-On demo day, when asked "how does the recognition work?":
-
-> "We implemented the $1 Unistroke Recognizer from the 2007 paper by
-> Wobbrock et al. No machine learning. The algorithm has five steps:
-> resample the stroke to 64 evenly spaced points, rotate to a canonical
-> orientation based on the angle from the first point to the centroid,
-> scale to a 250 by 250 bounding box, translate to origin, then compare
-> to each template by averaging the pairwise point distances. The
-> closest template wins."
-
-That answer demonstrates:
-- You read and implemented a real algorithm
-- You understand math beyond AP CSA curriculum
-- You can articulate it without reading from a paper
-
-A+.

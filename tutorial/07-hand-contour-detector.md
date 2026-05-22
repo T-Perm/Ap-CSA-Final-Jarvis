@@ -1,326 +1,208 @@
 # Chapter 7 - HandContourDetector
 
 **Audience**: Person A. **Time**: 3-5 hours including tuning.
+**You will write**: `HandContourDetector.java`.
 
-Track a bare hand. Count extended fingers. Map finger count to gesture
-type. Also detect "hold gestures" (fist held 1s, palm held 2s) for the
-scratchpad triggers.
+The hardest detection file. Detect a bare hand, count extended fingers,
+map count to gesture type, and detect timed "hold" gestures for the
+scratchpad.
 
-## Algorithm
+If you haven't read `api-reference-1-opencv.md`, read its convexHull /
+convexityDefects / morphologyEx entries first. This chapter assumes
+those methods are familiar.
 
-1. Convert BGR -> YCrCb (better for skin than HSV).
-2. Threshold the Cr,Cb channels to get a skin mask.
-3. Morphological cleanup (open + close).
-4. Find largest contour -> the hand.
-5. Compute convex hull. The hull touches the fingertips.
-6. Compute convexity defects: the gaps between hull and contour, i.e.
-   the valleys between fingers.
-7. Filter defects by depth + angle. Each valid defect = one finger gap.
-   N gaps means N+1 fingers.
-8. Map finger count to gesture type.
-9. Track how long the same gesture has been held - emit "hold" variants
-   when threshold passed.
+## Goal
 
-## Why YCrCb not HSV for skin
+`detect(Mat frame)` returns a `Gesture` whose type reflects the number
+of fingers (and timed holds), positioned at the hand's centroid.
 
-Skin tones across all ethnicities cluster in a tight Cr/Cb range
-(~133..173 Cr, 77..127 Cb) regardless of how bright Y is. HSV's hue
-also clusters but with more outliers. YCrCb is the standard choice
-for skin detection.
+## The pipeline
 
-## HandContourDetector.java
-
-`src/main/java/com/starkmouse/detection/HandContourDetector.java`:
-
-```java
-package com.starkmouse.detection;
-
-import org.opencv.core.Core;
-import org.opencv.core.Mat;
-import org.opencv.core.MatOfInt;
-import org.opencv.core.MatOfInt4;
-import org.opencv.core.MatOfPoint;
-import org.opencv.core.Point;
-import org.opencv.core.Scalar;
-import org.opencv.core.Size;
-import org.opencv.imgproc.Imgproc;
-import org.opencv.imgproc.Moments;
-
-import java.util.ArrayList;
-import java.util.List;
-
-/**
- * Bare-hand detector. Finds hand via skin segmentation, counts fingers
- * via convex hull defects, also detects timed hold gestures.
- */
-public class HandContourDetector implements GestureDetector {
-
-    private static final Scalar SKIN_LOWER = new Scalar(0, 133, 77);
-    private static final Scalar SKIN_UPPER = new Scalar(255, 173, 127);
-    private static final double MIN_HAND_AREA = 5000.0;
-    private static final double MAX_FINGER_ANGLE_DEG = 90.0;
-    private static final double MIN_DEFECT_DEPTH = 20.0;
-
-    /** ms a gesture must be held to upgrade to PEN_DOWN/PEN_UP. */
-    private static final long HOLD_MS_PEN = 1000;
-    /** ms a palm must be held to fire SCRATCHPAD_TOGGLE. */
-    private static final long HOLD_MS_TOGGLE = 2000;
-
-    private final Mat ycrcb = new Mat();
-    private final Mat mask = new Mat();
-    private final Mat morphKernel =
-            Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, new Size(5, 5));
-
-    // hold-gesture tracking
-    private Gesture.Type lastRawType = Gesture.Type.NONE;
-    private long heldSince = 0;
-    private boolean penFired = false;
-    private boolean toggleFired = false;
-
-    @Override
-    public Gesture detect(Mat frame) {
-        Imgproc.cvtColor(frame, ycrcb, Imgproc.COLOR_BGR2YCrCb);
-        Core.inRange(ycrcb, SKIN_LOWER, SKIN_UPPER, mask);
-        Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_OPEN, morphKernel);
-        Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_CLOSE, morphKernel);
-
-        MatOfPoint hand = findLargestContour(mask);
-        if (hand == null) return resetAndNone();
-        double area = Imgproc.contourArea(hand);
-        if (area < MIN_HAND_AREA) return resetAndNone();
-
-        Moments m = Imgproc.moments(hand);
-        int cx = (int) (m.m10 / m.m00);
-        int cy = (int) (m.m01 / m.m00);
-        int fingers = countFingers(hand);
-
-        Gesture.Type raw = rawTypeFromFingers(fingers);
-        Gesture.Type out = applyHoldLogic(raw);
-        double confidence = Math.min(1.0, area / 20000.0);
-        return new Gesture(out, cx, cy, confidence);
-    }
-
-    /** Reset hold timers when no hand visible. */
-    private Gesture resetAndNone() {
-        lastRawType = Gesture.Type.NONE;
-        penFired = false;
-        toggleFired = false;
-        return Gesture.none();
-    }
-
-    private MatOfPoint findLargestContour(Mat bin) {
-        List<MatOfPoint> contours = new ArrayList<>();
-        Mat hierarchy = new Mat();
-        Imgproc.findContours(bin, contours, hierarchy,
-                Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
-        hierarchy.release();
-        MatOfPoint best = null;
-        double bestArea = 0;
-        for (MatOfPoint c : contours) {
-            double a = Imgproc.contourArea(c);
-            if (a > bestArea) { bestArea = a; best = c; }
-        }
-        return best;
-    }
-
-    private int countFingers(MatOfPoint hand) {
-        MatOfInt hull = new MatOfInt();
-        Imgproc.convexHull(hand, hull, false);
-        if (hull.size().height < 3) return 0;
-
-        MatOfInt4 defects = new MatOfInt4();
-        try {
-            Imgproc.convexityDefects(hand, hull, defects);
-        } catch (Exception e) {
-            return 0;
-        }
-
-        Point[] points = hand.toArray();
-        int[] arr = defects.toArray();
-        int gaps = 0;
-        for (int i = 0; i < arr.length; i += 4) {
-            int startIdx = arr[i];
-            int endIdx = arr[i + 1];
-            int farIdx = arr[i + 2];
-            double depth = arr[i + 3] / 256.0;
-            if (depth < MIN_DEFECT_DEPTH) continue;
-            double angle = angleAtPoint(points[startIdx], points[endIdx], points[farIdx]);
-            if (angle < MAX_FINGER_ANGLE_DEG) gaps++;
-        }
-        return Math.min(5, gaps + 1);
-    }
-
-    private double angleAtPoint(Point a, Point b, Point far) {
-        double ab2 = sqdist(far, a);
-        double cb2 = sqdist(far, b);
-        double ac2 = sqdist(a, b);
-        double cos = (ab2 + cb2 - ac2) / (2 * Math.sqrt(ab2) * Math.sqrt(cb2));
-        cos = Math.max(-1.0, Math.min(1.0, cos));
-        return Math.toDegrees(Math.acos(cos));
-    }
-
-    private double sqdist(Point p, Point q) {
-        double dx = p.x - q.x, dy = p.y - q.y;
-        return dx * dx + dy * dy;
-    }
-
-    /**
-     * Raw gesture type before hold-logic. Maps finger count to base type.
-     */
-    private Gesture.Type rawTypeFromFingers(int fingers) {
-        return switch (fingers) {
-            case 0 -> Gesture.Type.NONE;       // fist - will upgrade to PEN_DOWN
-            case 1 -> Gesture.Type.POINT;
-            case 2 -> Gesture.Type.LEFT_CLICK;
-            case 3 -> Gesture.Type.RIGHT_CLICK;
-            default -> Gesture.Type.NONE;       // 4-5 fingers, palm - upgrades to PEN_UP / TOGGLE
-        };
-    }
-
-    /**
-     * Detects "held for N ms" gestures. Fist held 1s -> PEN_DOWN.
-     * Palm held 1s -> PEN_UP. Palm held 2s -> SCRATCHPAD_TOGGLE.
-     * Plain raw gestures pass through unchanged.
-     */
-    private Gesture.Type applyHoldLogic(Gesture.Type raw) {
-        // We need to differentiate fist (0 fingers) from palm (4-5).
-        // But rawTypeFromFingers returns NONE for both. Track the raw
-        // finger count separately via a sentinel raw type.
-        // For simplicity, do hold detection only for fist/palm here:
-        // we set a side-channel using the *finger count* in a parallel
-        // path. Simpler: re-derive whether raw was fist or palm by
-        // checking the last computed fingers in detect(). For this
-        // file, we keep raw shape - see step 3 below.
-        return raw;
-    }
-}
+```
+BGR -> YCrCb -> skin mask (inRange) -> morphology cleanup
+    -> largest contour -> convex hull -> convexity defects
+    -> count finger gaps -> finger count -> gesture type
+    -> apply hold-timing logic -> Gesture
 ```
 
-## Wait, that hold-logic doesn't work yet
+---
 
-Look at `rawTypeFromFingers`: both fist (0) and palm (4-5) return
-`NONE`. We lose the distinction needed for hold detection. Two fixes:
+## Method recap (see api-reference-1 for full detail)
 
-**Option 1**: add `FIST_RAW` and `PALM_RAW` enum values, never emit
-them to the mapper, only use them internally.
+- `Imgproc.cvtColor(src, dst, Imgproc.COLOR_BGR2YCrCb)` - skin-friendly
+  color space
+- `Core.inRange(ycrcb, lo, hi, mask)` - skin threshold; good skin
+  bounds are roughly `Scalar(0,133,77)` to `Scalar(255,173,127)`
+- `Imgproc.morphologyEx(mask, mask, op, kernel)` with
+  `MORPH_OPEN` then `MORPH_CLOSE`; kernel from
+  `Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, new Size(5,5))`
+- `Imgproc.findContours(...)` + `Imgproc.contourArea(...)` - same as ch6
+- `Imgproc.convexHull(contour, hullIndices, false)` - hullIndices is a
+  `MatOfInt`
+- `Imgproc.convexityDefects(contour, hullIndices, defects)` - defects is
+  a `MatOfInt4`; `.toArray()` gives ints in groups of 4:
+  `[startIdx, endIdx, farIdx, depth]`, depth in 1/256 px
 
-**Option 2**: track finger count as a class field and use it in
-`applyHoldLogic`.
+---
 
-Going with option 2 for simplicity. Replace `applyHoldLogic` and update
-`detect`:
+## Concept: counting fingers from defects
+
+5 spread fingers create 4 deep "valleys" (defects) between them. So:
+`fingers = validGaps + 1`. A valid gap is one that's deep enough
+(depth > ~20px after dividing by 256) AND has a sharp angle at the
+valley (< ~90 degrees - finger gaps are acute).
+
+The angle at the valley point uses the law of cosines on the triangle
+formed by the two fingertip points and the valley point.
+
+Throwaway angle helper to study (you'll write your own version):
 
 ```java
-private int lastFingers = -1;
-
-@Override
-public Gesture detect(Mat frame) {
-    // ... existing code up through `int fingers = countFingers(hand);`
-
-    Gesture.Type raw = rawTypeFromFingers(fingers);
-    Gesture.Type out = applyHoldLogic(raw, fingers);
-
-    double confidence = Math.min(1.0, area / 20000.0);
-    return new Gesture(out, cx, cy, confidence);
-}
-
-private Gesture.Type applyHoldLogic(Gesture.Type raw, int fingers) {
-    boolean isFist = (fingers == 0);
-    boolean isPalm = (fingers >= 4);
-    long now = System.currentTimeMillis();
-
-    if (fingers != lastFingers) {
-        // gesture changed - reset hold tracking
-        lastFingers = fingers;
-        heldSince = now;
-        penFired = false;
-        toggleFired = false;
-        return raw;
-    }
-
-    long held = now - heldSince;
-
-    if (isFist && held >= HOLD_MS_PEN && !penFired) {
-        penFired = true;
-        return Gesture.Type.PEN_DOWN;
-    }
-    if (isPalm) {
-        if (held >= HOLD_MS_TOGGLE && !toggleFired) {
-            toggleFired = true;
-            return Gesture.Type.SCRATCHPAD_TOGGLE;
-        }
-        if (held >= HOLD_MS_PEN && !penFired) {
-            penFired = true;
-            return Gesture.Type.PEN_UP;
-        }
-    }
-    return raw;
-}
-
-@Override
-public String getName() {
-    return "Hand Contour";
-}
+// angle at vertex `far`, given two other points a and b
+double ab2 = sqDist(far, a), cb2 = sqDist(far, b), ac2 = sqDist(a, b);
+double cos = (ab2 + cb2 - ac2) / (2 * Math.sqrt(ab2) * Math.sqrt(cb2));
+double angleDeg = Math.toDegrees(Math.acos(clamp(cos, -1, 1)));
 ```
 
-Drop the now-unused `lastRawType` field.
+(`sqDist` = squared distance; clamp keeps acos's input in [-1,1] to
+avoid NaN from rounding.)
 
-## Imports recap
+---
 
-| Import | What |
-|--------|------|
-| `org.opencv.core.Core` | `inRange` |
-| `org.opencv.core.Mat` | image buffers |
-| `org.opencv.core.MatOfInt` | hull indices |
-| `org.opencv.core.MatOfInt4` | defects (each defect is 4 ints) |
-| `org.opencv.core.MatOfPoint` | a contour |
-| `org.opencv.core.Point` | a 2D point |
-| `org.opencv.core.Scalar` | color bounds |
-| `org.opencv.core.Size` | kernel size |
-| `org.opencv.imgproc.Imgproc` | most of the algorithms |
-| `org.opencv.imgproc.Moments` | centroid math |
-| `java.util.ArrayList`, `java.util.List` | contours list |
+## Concept: hold-gesture timing (the tricky part)
 
-## How convexity defects work
+The scratchpad needs "fist held 1 second" and "palm held 2 seconds" as
+distinct events. A detector that fires every frame can't express
+"held." You track timing yourself:
 
-OpenCV's `convexityDefects` returns an array where every 4 ints describe
-one defect:
+- Remember the current finger count and when it started
+- Each frame, if the count is unchanged, check how long it's been held
+- When a threshold is crossed, emit the special gesture ONCE (set a
+  "fired" flag so it doesn't repeat every frame)
+- When the count changes, reset the timer and flags
 
-- `[i+0]` start index into the contour (one fingertip)
-- `[i+1]` end index (the next fingertip)
-- `[i+2]` farthest point index (the valley between them)
-- `[i+3]` depth from hull to far point, in units of 256 (so divide by
-  256 to get pixels)
+You'll need fields like: `lastFingers`, `heldSince` (a timestamp from
+`System.currentTimeMillis()`), `penFired`, `toggleFired`.
 
-Real finger gaps:
-- have meaningful depth (we filter < 20 px to remove noise)
-- have a sharp angle at the valley (< 90 degrees - finger gaps are
-  acute)
+This is an "edge-triggered" pattern - fire on the transition, not
+continuously.
 
-## Tuning
+---
 
-- Skin range too broad? Lower 173 to ~165 (Cr upper).
-- Hand missed? Widen Cr/Cb range.
-- Fingers undercounted? Lower `MIN_DEFECT_DEPTH`.
-- Fingers overcounted? Raise `MIN_DEFECT_DEPTH` or lower
-  `MAX_FINGER_ANGLE_DEG`.
-- Background is also skin-toned (beige wall, wooden furniture)?
-  Use a darker, non-skin background for the demo. Sometimes you can't
-  fix it with code.
+## Now build it
 
-## Holding gestures
+Create `src/main/java/com/starkmouse/detection/HandContourDetector.java`
+implementing `GestureDetector`.
 
-- "Fist held 1s" -> single PEN_DOWN emitted once. The next frame you
-  hold a fist, `penFired` is already true, so you get plain NONE again
-  until you change gesture and re-fist.
-- This "edge-trigger" pattern prevents the gesture firing every frame.
+### Constants (static final)
+
+- Skin lower/upper `Scalar`s (use the YCrCb values above)
+- `MIN_HAND_AREA` ~ 5000
+- `MAX_FINGER_ANGLE_DEG` ~ 90
+- `MIN_DEFECT_DEPTH` ~ 20
+- `HOLD_MS_PEN` = 1000, `HOLD_MS_TOGGLE` = 2000
+
+### Reusable Mat fields
+
+- `ycrcb`, `mask`, and the morphology `kernel` (build the kernel once
+  as a field).
+
+### Hold-tracking fields
+
+- `int lastFingers` (init -1), `long heldSince`, `boolean penFired`,
+  `boolean toggleFired`.
+
+### detect(Mat frame)
+
+1. cvtColor to YCrCb.
+2. inRange for skin -> mask.
+3. morphologyEx OPEN then CLOSE on the mask.
+4. Find the largest contour (reuse your ch6 approach; consider
+   extracting a private `findLargestContour` helper).
+5. If none, or area < MIN_HAND_AREA, reset your hold state and return
+   `Gesture.none()`. (Write a small private `resetAndNone()` that clears
+   lastFingers/penFired/toggleFired and returns `Gesture.none()`.)
+6. Centroid via moments (cx, cy).
+7. `int fingers = countFingers(handContour)` (private helper, below).
+8. `Gesture.Type type = applyHoldLogic(fingers)` (private helper, below).
+9. confidence = `Math.min(1.0, area / 20000.0)`.
+10. Return `new Gesture(type, cx, cy, confidence)`.
+
+### private int countFingers(MatOfPoint hand)
+
+1. convexHull -> a `MatOfInt` of indices. If it has < 3 entries, return 0.
+2. convexityDefects -> a `MatOfInt4`. Wrap in try/catch; on exception
+   return 0.
+3. `Point[] pts = hand.toArray()`, `int[] arr = defects.toArray()`.
+4. Loop `i` over `arr` in steps of 4. For each defect:
+   - depth = `arr[i+3] / 256.0`; skip if < MIN_DEFECT_DEPTH
+   - angle = angle at `pts[arr[i+2]]` between `pts[arr[i]]` and
+     `pts[arr[i+1]]`; count it if angle < MAX_FINGER_ANGLE_DEG
+5. Return `Math.min(5, gaps + 1)`.
+
+Write private helpers `angleAtPoint(a, b, far)` and `sqDist(p, q)` using
+the law-of-cosines snippet above.
+
+### private Gesture.Type applyHoldLogic(int fingers)
+
+1. `isFist = fingers == 0`, `isPalm = fingers >= 4`.
+2. `now = System.currentTimeMillis()`.
+3. If `fingers != lastFingers`: reset (`lastFingers = fingers`,
+   `heldSince = now`, clear both fired flags) and return the *base*
+   gesture for this count (see mapping below).
+4. `held = now - heldSince`.
+5. If `isFist && held >= HOLD_MS_PEN && !penFired`: set penFired, return
+   `PEN_DOWN`.
+6. If `isPalm`:
+   - if `held >= HOLD_MS_TOGGLE && !toggleFired`: set toggleFired,
+     return `SCRATCHPAD_TOGGLE`
+   - else if `held >= HOLD_MS_PEN && !penFired`: set penFired, return
+     `PEN_UP`
+7. Otherwise return the base gesture for this count.
+
+### Base gesture mapping (non-held)
+
+- 1 finger -> `POINT`
+- 2 -> `LEFT_CLICK`
+- 3 -> `RIGHT_CLICK`
+- 0 (fist) and 4-5 (palm) -> `NONE` as the base (they only become
+  meaningful once held). You can write this as a tiny `switch` or
+  if/else.
+
+### getName
+
+Return `"Hand Contour"`.
+
+---
+
+## Tuning (budget real time here)
+
+- False detection on a beige wall / wood desk -> use a darker, non-skin
+  background for the demo, and/or narrow the Cr upper bound (173 -> 165).
+- Hand missed entirely -> widen the skin range.
+- Too many fingers -> raise MIN_DEFECT_DEPTH.
+- Too few fingers -> lower MIN_DEFECT_DEPTH or raise MAX_FINGER_ANGLE_DEG.
+- Save the mask with `Imgcodecs.imwrite("debug-mask.png", mask)` to see
+  whether the problem is the mask or the geometry.
 
 ## Test
 
-Wire `HandContourDetector` into the temporary main like the color blob
-test. Print gestures every frame. Hold up 1, 2, 3 fingers. You should
-see the gesture type change.
+Wire it into a temporary main like ch6's test. Hold up 1, 2, 3 fingers
+and watch the gesture type change. Then hold a fist still for a second
+- you should see one `PEN_DOWN`. Hold an open palm for 2 seconds - you
+should see `PEN_UP` around 1s then `SCRATCHPAD_TOGGLE` around 2s.
 
-Commit: `add HandContourDetector`. Person A is now done with their
-non-scratchpad work. Move to chapter 11 (integration with Person B)
-or chapter 13 if Person B's pieces aren't ready.
+## Checklist
+
+- [ ] Implements GestureDetector, compiles
+- [ ] Reused Mat fields + prebuilt kernel
+- [ ] Finger counting works in good lighting
+- [ ] Hold gestures fire once (not every frame)
+- [ ] Hold state resets when the hand disappears
+- [ ] Javadoc everywhere
+
+Stuck >30 min? Compare to `/reference/detection/HandContourDetector.java`
+(note: the reference's hold-logic is structured slightly differently -
+understand it, don't copy).
+
+Commit: `add HandContourDetector`. Person A's core detection is done.

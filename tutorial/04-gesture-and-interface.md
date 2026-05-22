@@ -1,146 +1,166 @@
-# Chapter 4 - Gesture data class and detector interface
+# Chapter 4 - Gesture class + GestureDetector interface
 
 **Audience**: Person A. **Time**: 30 min.
+**You will write**: `Gesture.java` and `GestureDetector.java`.
 
-You're building two things: a data class to carry detection results,
-and an interface that all detectors implement. These are the contracts
-the rest of the project depends on.
+These two files are the contract the whole project depends on. Small,
+but lock them down - Person B builds against them.
 
-## Gesture.java
+## What you're building
 
-`src/main/java/com/starkmouse/detection/Gesture.java`:
+1. `Gesture` - an immutable data object carrying one detection result
+   (type, x, y, confidence), plus a nested enum of gesture types.
+2. `GestureDetector` - an interface every detector implements.
+
+No new APIs here - this is plain Java. The point is getting the shape
+right so nothing downstream breaks.
+
+---
+
+## Concept: why immutable
+
+"Immutable" = once constructed, fields never change. You do this by
+making every field `final` and providing no setters. Benefits: safe to
+share across threads (your capture loop is on a background thread),
+can't be accidentally mutated, easier to reason about.
+
+Example of the pattern (throwaway, not your class):
 
 ```java
-package com.starkmouse.detection;
-
-/**
- * Immutable record of one detected gesture.
- */
-public class Gesture {
-
-    /** All gesture types the system can produce. */
-    public enum Type {
-        /** Nothing detected. */
-        NONE,
-        /** Move cursor / track fingertip. */
-        POINT,
-        /** Left click. */
-        LEFT_CLICK,
-        /** Right click. */
-        RIGHT_CLICK,
-        /** Fist held 1s - pause in mouse mode, pen-down in scratchpad. */
-        PEN_DOWN,
-        /** Palm held 1s - resume in mouse mode, pen-up in scratchpad. */
-        PEN_UP,
-        /** Palm held 2s - toggle scratchpad window. */
-        SCRATCHPAD_TOGGLE
-    }
-
-    private final Type type;
+public class Point2D {
     private final int x;
     private final int y;
-    private final double confidence;
-
-    /**
-     * @param type gesture type
-     * @param x camera-space x coordinate
-     * @param y camera-space y coordinate
-     * @param confidence 0.0 to 1.0
-     */
-    public Gesture(Type type, int x, int y, double confidence) {
-        this.type = type;
-        this.x = x;
-        this.y = y;
-        this.confidence = confidence;
-    }
-
-    /** @return a NONE gesture */
-    public static Gesture none() {
-        return new Gesture(Type.NONE, 0, 0, 0.0);
-    }
-
-    /** @return gesture type */
-    public Type getType() { return type; }
-    /** @return x in camera pixels */
+    public Point2D(int x, int y) { this.x = x; this.y = y; }
     public int getX() { return x; }
-    /** @return y in camera pixels */
     public int getY() { return y; }
-    /** @return confidence 0..1 */
-    public double getConfidence() { return confidence; }
-
-    @Override
-    public String toString() {
-        return String.format("%s @ (%d,%d) c=%.2f", type, x, y, confidence);
-    }
 }
 ```
 
-**Why immutable** (all `final`, no setters): safe to pass between
-threads; can't be mutated by accident; cleaner reasoning.
+Note: fields `final`, set once in constructor, only getters.
 
-**Why an enum not String constants**: typo'd `"point"` vs `"POINT"`
-is a runtime bug; typo'd `Type.point` is a compile error.
+---
 
-**`none()` factory**: cleaner than returning `null` everywhere. The
-loop can do `if (g.getType() == Type.NONE) skip;` without null-checks.
+## Concept: enum vs string constants
 
-No imports needed - everything used is in `java.lang`.
+You could represent gesture types as strings ("POINT", "CLICK"). Don't.
+A typo'd string is a runtime bug; a typo'd enum constant won't compile.
+Enums also work in `switch`.
 
-## GestureDetector.java
-
-`src/main/java/com/starkmouse/detection/GestureDetector.java`:
+Example (throwaway):
 
 ```java
-package com.starkmouse.detection;
+public enum Direction { NORTH, SOUTH, EAST, WEST }
+Direction d = Direction.NORTH;
+```
 
-import org.opencv.core.Mat;
+You can nest an enum inside a class - then it's referenced as
+`Gesture.Type.POINT`.
 
-/**
- * Strategy interface for detection algorithms. The main loop holds a
- * GestureDetector reference and doesn't know which concrete class is
- * running - that's how we hot-swap algorithms at runtime.
- */
-public interface GestureDetector {
+---
 
-    /**
-     * Analyze one frame.
-     * @param frame current BGR frame
-     * @return detected Gesture or Gesture.none()
-     */
-    Gesture detect(Mat frame);
+## Build Gesture.java
 
-    /**
-     * @return short display name e.g. "Color Blob"
-     */
-    String getName();
+Create `src/main/java/com/starkmouse/detection/Gesture.java`.
 
-    /** Optional setup hook. Default does nothing. */
-    default void calibrate() { }
+### The nested enum
+
+Inside the class, declare `public enum Type` with these constants
+(give each a one-line Javadoc comment - rubric):
+
+- `NONE` - nothing detected
+- `POINT` - move cursor / track fingertip
+- `LEFT_CLICK`
+- `RIGHT_CLICK`
+- `PEN_DOWN` - fist held 1s (pause in mouse mode, pen-down in scratchpad)
+- `PEN_UP` - palm held 1s (resume in mouse mode, pen-up in scratchpad)
+- `SCRATCHPAD_TOGGLE` - palm held 2s, opens/closes scratchpad
+
+### The fields
+
+Four `private final` fields: a `Type`, an `int x`, an `int y`, a
+`double confidence`. Give each a brief Javadoc.
+
+### The constructor
+
+Takes all four, assigns them with `this.x = x;` etc.
+
+### A static factory for "nothing"
+
+Write `public static Gesture none()` that returns a `Gesture` with type
+`NONE`, coordinates 0,0, confidence 0.0. This lets detectors return
+`Gesture.none()` instead of `null`, which avoids null checks everywhere.
+
+### Getters
+
+One getter per field: `getType()`, `getX()`, `getY()`, `getConfidence()`.
+
+### toString (helps debugging)
+
+Override `toString()` to return something like `POINT @ (320,240) c=0.85`.
+Use `String.format("%s @ (%d,%d) c=%.2f", ...)`.
+
+### Imports
+
+None needed - everything is `java.lang`.
+
+---
+
+## Build GestureDetector.java
+
+Create `src/main/java/com/starkmouse/detection/GestureDetector.java`.
+
+It's an `interface`. Declare three things:
+
+1. `Gesture detect(Mat frame)` - analyze a frame, return a Gesture
+2. `String getName()` - short label for the detector
+3. `default void calibrate() { }` - optional setup hook, empty default
+
+### Concept: default method
+
+Interfaces can provide a default implementation for a method using the
+`default` keyword. Classes that implement the interface don't have to
+override it. We use it so detectors that need no calibration can skip it.
+
+Example (throwaway):
+
+```java
+interface Greeter {
+    String greet();
+    default void wave() { System.out.println("waves"); }
 }
 ```
 
-**Imports**: `org.opencv.core.Mat` because the parameter is a Mat.
+### Imports
 
-**`default void calibrate()`**: Java 8+ interfaces allow default
-methods. Implementations don't have to override it.
+Just `org.opencv.core.Mat` (the parameter type).
 
-## Why this matters for the rubric
+---
 
-This is the polymorphism showcase. Tell the grader:
+## Why this is the polymorphism showcase
 
-- `GestureDetector` is the interface
-- We have two implementations: `ColorBlobDetector` and `HandContourDetector`
-- The main loop has `GestureDetector active = ...` and calls
-  `active.detect(frame)` without knowing which one it is
-- F1/F2 swaps the implementation at runtime
+On demo day: "`GestureDetector` is an interface. We have two
+implementations - color blob and hand contour. The main loop holds a
+`GestureDetector` reference and calls `detect()` without knowing which
+class it actually is. F1/F2 swaps the implementation at runtime."
 
-That's textbook polymorphism with a real, demoable benefit.
+That's textbook polymorphism with a real payoff.
+
+---
+
+## Checklist
+
+- [ ] `Gesture` fields all `final`, no setters
+- [ ] `Type` enum has all 7 constants, each with Javadoc
+- [ ] `none()` factory works
+- [ ] `toString` prints readably
+- [ ] `GestureDetector` is an `interface` with the 3 members
+- [ ] Every method/field has Javadoc
 
 ## Lock the contract
 
-Once you commit these two files, Person B's code starts depending on
-them. Don't change the method names or the enum values without telling
-them. If you need to add a new gesture type, that's fine - adding is
-safe, renaming is not.
+Once committed, tell Person B "Gesture and GestureDetector are final."
+Adding enum values later is safe; renaming methods is not.
 
-Commit: `add Gesture and GestureDetector interface`. Move to chapter 5.
+Compare to `/reference/detection/` only after writing your own.
+
+Commit: `add Gesture and GestureDetector`. Move to chapter 5.

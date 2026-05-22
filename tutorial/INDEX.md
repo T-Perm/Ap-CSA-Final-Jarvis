@@ -84,3 +84,26 @@ splitting up. If one of you can't build, no scratchpad will help.
 5. Ask Claude with CLAUDE.md content + the code + the error pasted
 
 30 minutes max, then ask for help.
+
+## API references (textbook style)
+
+If you want to learn the non-CSA APIs in isolation - method-by-method,
+with an example and an exercise for each - read these before or
+alongside the chapters. They explain the libraries; the chapters apply
+them.
+
+- [api-reference-1-opencv.md](./api-reference-1-opencv.md) - Mat,
+  VideoCapture, cvtColor, inRange, findContours, contourArea, moments,
+  convexHull, convexityDefects, morphologyEx, imwrite (Person A)
+- [api-reference-2-robot.md](./api-reference-2-robot.md) - Robot,
+  mouseMove, mousePress, screen size, coordinate mapping, smoothing,
+  debouncing (Person B)
+- [api-reference-3-tray-and-drawing.md](./api-reference-3-tray-and-drawing.md)
+  - SystemTray, TrayIcon, notifications, Graphics2D, paintComponent,
+  BufferedImage, GeneralPath (Person B)
+- [api-reference-4-hotkey-threading-fileio.md](./api-reference-4-hotkey-threading-fileio.md)
+  - JNativeHook, Thread, volatile, invokeLater, java.nio.file (both)
+
+Recommended: Person A reads reference 1, Person B reads 2 and 3, both
+read 4. Each entry ends with a "try it" exercise - do those in a
+scratch file to build muscle memory before writing the real classes.

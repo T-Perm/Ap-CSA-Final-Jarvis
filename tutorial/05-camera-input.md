@@ -1,119 +1,128 @@
 # Chapter 5 - CameraInput
 
 **Audience**: Person A. **Time**: 20 min.
+**You will write**: `CameraInput.java`.
 
-Wrap `VideoCapture` in a clean API so the main loop doesn't import
-OpenCV directly.
+Wrap OpenCV's `VideoCapture` in a clean class so the rest of the project
+never imports OpenCV's video API directly.
 
-## CameraInput.java
+## Goal
 
-`src/main/java/com/starkmouse/input/CameraInput.java`:
+A class with: a constructor taking a camera index, `start()`,
+`grabFrame()` returning a `Mat` (or null on failure), `stop()`, and
+`isRunning()`.
+
+---
+
+## Method: VideoCapture
+
+The webcam reader.
+
+- `new VideoCapture(int index)` - open camera by index (0 = default)
+- `cap.isOpened()` -> boolean
+- `cap.read(Mat dst)` -> boolean, writes the next frame into dst
+- `cap.release()` - free the camera
+
+Example (throwaway):
 
 ```java
-package com.starkmouse.input;
-
-import org.opencv.core.Mat;
-import org.opencv.videoio.VideoCapture;
-
-/**
- * Wraps an OpenCV VideoCapture in a simple API.
- */
-public class CameraInput {
-
-    /** Camera index (0 = default webcam). */
-    private final int cameraIndex;
-
-    /** Underlying capture; null until start(). */
-    private VideoCapture capture;
-
-    /** Reused frame buffer to avoid per-frame allocation. */
-    private final Mat buffer = new Mat();
-
-    /**
-     * @param cameraIndex 0-based index
-     */
-    public CameraInput(int cameraIndex) {
-        this.cameraIndex = cameraIndex;
-    }
-
-    /**
-     * Open the camera.
-     * @throws RuntimeException if camera cannot be opened
-     */
-    public void start() {
-        capture = new VideoCapture(cameraIndex);
-        if (!capture.isOpened()) {
-            throw new RuntimeException("Could not open camera " + cameraIndex);
-        }
-        // warm up - first few frames are usually black
-        for (int i = 0; i < 5; i++) {
-            capture.read(buffer);
-            try { Thread.sleep(50); } catch (InterruptedException ignored) {}
-        }
-    }
-
-    /**
-     * Grab the next frame.
-     * @return the latest frame, or null on read failure
-     */
-    public Mat grabFrame() {
-        if (capture == null || !capture.isOpened()) return null;
-        boolean ok = capture.read(buffer);
-        return ok && !buffer.empty() ? buffer : null;
-    }
-
-    /** Release the camera so other apps can use it. */
-    public void stop() {
-        if (capture != null) {
-            capture.release();
-            capture = null;
-        }
-    }
-
-    /** @return true if camera is open */
-    public boolean isRunning() {
-        return capture != null && capture.isOpened();
-    }
-}
+VideoCapture cap = new VideoCapture(0);
+Mat frame = new Mat();
+cap.read(frame);
+cap.release();
 ```
 
-## Imports
+---
 
-| Import | What |
-|--------|------|
-| `org.opencv.core.Mat` | frame buffer |
-| `org.opencv.videoio.VideoCapture` | webcam handle |
+## Concept: reuse one Mat buffer
 
-## Design notes
+`cap.read(buffer)` writes into a Mat you provide. If you make a new Mat
+every frame, you leak native memory fast. Instead, keep ONE Mat as a
+field and read into it every time.
 
-- `buffer` is reused across calls. `cap.read(buffer)` writes into the
-  same Mat each time instead of allocating a new one. OpenCV does this
-  pattern a lot - reuse Mats, don't create them per-frame.
-- Returning a shared Mat means the caller must not hold onto it past
-  the next `grabFrame()` call. For us that's fine - the loop processes
-  each frame before grabbing the next.
-- The warm-up loop in `start()` handles the "first 5 frames are black"
-  issue once instead of every caller dealing with it.
+---
+
+## Concept: webcam warmup
+
+The first several frames from a freshly-opened camera are often black
+(auto-exposure settling). Read ~5 throwaway frames in `start()` so
+callers get good frames immediately.
+
+---
+
+## Build CameraInput.java
+
+Create `src/main/java/com/starkmouse/input/CameraInput.java`.
+
+### Fields
+
+- `private final int cameraIndex` - set in constructor
+- `private VideoCapture capture` - null until `start()`
+- `private final Mat buffer = new Mat()` - the reused frame buffer
+
+### Constructor
+
+`CameraInput(int cameraIndex)` - store the index.
+
+### start()
+
+1. `capture = new VideoCapture(cameraIndex)`
+2. If `!capture.isOpened()`, throw a `RuntimeException` with a clear
+   message (so a missing camera fails loudly).
+3. Warmup: loop ~5 times, `capture.read(buffer)` with a short
+   `Thread.sleep(50)` between (wrap the sleep's `InterruptedException`).
+
+### grabFrame()
+
+1. If `capture` is null or not opened, return `null`.
+2. `boolean ok = capture.read(buffer)`.
+3. Return `buffer` if `ok && !buffer.empty()`, else `null`.
+
+(You're returning the shared buffer - the caller must use it before the
+next `grabFrame()`. Fine for our single-threaded loop.)
+
+### stop()
+
+If `capture` isn't null: `capture.release()` then set it to null.
+
+### isRunning()
+
+Return whether `capture` is non-null and opened.
+
+### Imports
+
+| Import | For |
+|--------|-----|
+| `org.opencv.core.Mat` | the buffer |
+| `org.opencv.videoio.VideoCapture` | the camera |
+
+---
 
 ## Test it
 
-Throwaway main in `MainApp.java` (you'll replace it later):
+Throwaway main:
 
 ```java
-public static void main(String[] args) {
-    nu.pattern.OpenCV.loadLocally();
-    CameraInput cam = new CameraInput(0);
-    cam.start();
-    for (int i = 0; i < 50; i++) {
-        Mat f = cam.grabFrame();
-        System.out.println(f == null ? "null" : f.size().toString());
-        try { Thread.sleep(33); } catch (InterruptedException ignored) {}
-    }
-    cam.stop();
+nu.pattern.OpenCV.loadLocally();
+CameraInput cam = new CameraInput(0);
+cam.start();
+for (int i = 0; i < 50; i++) {
+    Mat f = cam.grabFrame();
+    System.out.println(f == null ? "null" : f.size().toString());
+    try { Thread.sleep(33); } catch (InterruptedException ignored) {}
 }
+cam.stop();
 ```
 
-`mvn package`, `java -jar target/...`, see 50 `640x480` (or similar)
-lines. If you see `null` repeatedly the camera isn't delivering.
+Expect 50 lines like `640x480`. Constant `null` means the camera isn't
+delivering - try index 1, quit Zoom/Teams, check camera privacy.
+
+## Checklist
+
+- [ ] Mat buffer is a reused field
+- [ ] `start()` throws if camera won't open
+- [ ] `grabFrame()` returns null (not a crash) on failure
+- [ ] Javadoc on every method
+- [ ] 50 frame sizes print in the test
 
 Commit: `add CameraInput`. Move to chapter 6.
