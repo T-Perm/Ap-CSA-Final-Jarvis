@@ -17,10 +17,10 @@ import java.util.List;
 public class ColorBlobDetector implements GestureDetector {
 
     /** Lower bound for the HSV color thresholding (e.g., orange). */
-    private static final Scalar LOWER_BOUND = new Scalar(5, 100, 100);
+    private static final Scalar LOWER_BOUND = new Scalar(40, 80, 80);
 
     /** Upper bound for the HSV color thresholding (e.g., orange). */
-    private static final Scalar UPPER_BOUND = new Scalar(20, 255, 255);
+    private static final Scalar UPPER_BOUND = new Scalar(80, 255, 255);
 
     /** Minimum contour area in pixels to filter out noise. */
     private static final double MIN_CONTOUR_AREA = 400.0;
