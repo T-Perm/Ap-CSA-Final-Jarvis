@@ -12,11 +12,11 @@ public class Gesture {
     }
 
     private final Type type;
-    private final int x;
-    private final int y;
+    private final double x;
+    private final double y;
     private final double confidence;
 
-    public Gesture(Type type, int x, int y, double confidence) {
+    public Gesture(Type type, double x, double y, double confidence) {
         this.type = type;
         this.x = x;
         this.y = y;
@@ -27,11 +27,11 @@ public class Gesture {
         return type;
     }
 
-    public int getX() {
+    public double getX() {
         return x;
     }
 
-    public int getY() {
+    public double getY() {
         return y;
     }
 
@@ -40,11 +40,11 @@ public class Gesture {
     }
 
     public static Gesture none() {
-        return new Gesture(Type.NONE, 0, 0, 0.0);
+        return new Gesture(Type.NONE, 0.0, 0.0, 0.0);
     }
 
     @Override
     public String toString() {
-        return String.format("%s @ (%d,%d) c=%.2f", type, x, y, confidence);
+        return String.format("%s @ (%.3f,%.3f) c=%.2f", type, x, y, confidence);
     }
 }

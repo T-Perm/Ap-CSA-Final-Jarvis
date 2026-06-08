@@ -1,112 +1,207 @@
 package com.starkmouse.app;
-
-import com.starkmouse.detection.HandContourDetector;
+import com.starkmouse.detection.SocketGestureDetector;
 import com.starkmouse.detection.Gesture;
-import com.starkmouse.input.CameraInput;
-import nu.pattern.OpenCV;
-import org.opencv.core.Mat;
-import org.opencv.core.MatOfByte;
-import org.opencv.core.Point;
-import org.opencv.core.Scalar;
-import org.opencv.imgcodecs.Imgcodecs;
-import org.opencv.imgproc.Imgproc;
 
 import javax.imageio.ImageIO;
 import javax.swing.ImageIcon;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
+import java.awt.Dimension;
+import java.awt.Robot;
+import java.awt.Toolkit;
+import java.awt.event.InputEvent;
 import java.awt.image.BufferedImage;
+import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
+import java.io.File;
+import java.io.InputStreamReader;
+import java.net.Socket;
 
 public class MainApp {
-
-    static BufferedImage toImage(Mat mat) throws Exception {
-        MatOfByte buf = new MatOfByte();
-        Imgcodecs.imencode(".png", mat, buf);
-        BufferedImage img = ImageIO.read(new ByteArrayInputStream(buf.toArray()));
-        buf.release();
-        return img;
-    }
+    private static final int GESTURE_PORT = 5005;
+    private static final int FRAME_PORT   = 5006;
+    private static volatile BufferedImage latestFrame = null;
 
     public static void main(String[] args) throws Exception {
-        OpenCV.loadLocally();
 
-        CameraInput cam = new CameraInput(0);
-        cam.start();
-
-        HandContourDetector det = new HandContourDetector();
-
-        // feed window - left side of screen
-        JLabel feedLabel = new JLabel();
-        JFrame feedFrame = new JFrame("ch7 - Hand Contour test");
+        System.out.println("[Main] Starting tracker...");
+        Process pythonProcess = launchPython();
+        SocketGestureDetector det = new SocketGestureDetector("127.0.0.1", GESTURE_PORT);
+        startFrameReceiver();
+        JLabel feedLabel = new JLabel("Waiting for feed...");
+        JFrame feedFrame = new JFrame("Hand Tracker");
         feedFrame.add(feedLabel);
-        feedFrame.setSize(680, 540);
-        feedFrame.setLocation(0, 0);
+        feedFrame.setSize(680, 520);
+        feedFrame.setLocation(50, 50);
         feedFrame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         feedFrame.setVisible(true);
 
-        // mask window - right side of screen
-        JLabel maskLabel = new JLabel();
-        JFrame maskFrame = new JFrame("ch7 - mask (tune HSV here)");
-        maskFrame.add(maskLabel);
-        maskFrame.setSize(680, 540);
-        maskFrame.setLocation(700, 0);
-        maskFrame.setVisible(true);
-
-        Mat annotated = new Mat();
+        Robot robot = new Robot();
+        Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
+        boolean leftClicked = false;
+        boolean rightClicked = false;
+        boolean sized = false;
 
         while (feedFrame.isVisible()) {
-            Mat frame = cam.grabFrame();
-            if (frame == null) {
-                Thread.sleep(30);
-                continue;
+            Gesture g = det.detect();
+            if (g != null) {
+                if (g.getType() != Gesture.Type.NONE) {
+                    int screenX = (int) (g.getX() * screenSize.width);
+                    int screenY = (int) (g.getY() * screenSize.height);
+                    robot.mouseMove(screenX, screenY);
+                }
+
+                if (g.getType() == Gesture.Type.LEFT_CLICK) {
+                    if (!leftClicked) {
+                        robot.mousePress(InputEvent.BUTTON1_DOWN_MASK);
+                        leftClicked = true;
+                    }
+                } else {
+                    if (leftClicked) {
+                        robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK);
+                        leftClicked = false;
+                    }
+                }
+
+                if (g.getType() == Gesture.Type.RIGHT_CLICK) {
+                    if (!rightClicked) {
+                        robot.mousePress(InputEvent.BUTTON3_DOWN_MASK);
+                        rightClicked = true;
+                    }
+                } else {
+                    if (rightClicked) {
+                        robot.mouseRelease(InputEvent.BUTTON3_DOWN_MASK);
+                        rightClicked = false;
+                    }
+                }
             }
 
-            Gesture g = det.detect(frame);
-
-            // copy the frame and draw the tracked point on it
-            frame.copyTo(annotated);
-            if (g.getType() != Gesture.Type.NONE) {
-                // orange circle at the centroid
-                Imgproc.circle(annotated,
-                        new Point(g.getX(), g.getY()),
-                        16, new Scalar(0, 140, 255), 3);
-                // crosshair
-                Imgproc.line(annotated,
-                        new Point(g.getX() - 24, g.getY()),
-                        new Point(g.getX() + 24, g.getY()),
-                        new Scalar(0, 140, 255), 1);
-                Imgproc.line(annotated,
-                        new Point(g.getX(), g.getY() - 24),
-                        new Point(g.getX(), g.getY() + 24),
-                        new Scalar(0, 140, 255), 1);
-                // print gesture info on the image
-                Imgproc.putText(annotated,
-                        g.toString(),
-                        new Point(10, 30),
-                        Imgproc.FONT_HERSHEY_SIMPLEX, 0.7,
-                        new Scalar(0, 255, 0), 2);
+            BufferedImage img = latestFrame;
+            if (img != null) {
+                feedLabel.setIcon(new ImageIcon(img));
+                feedLabel.setText(null);
+                if (!sized) {
+                    feedFrame.setSize(img.getWidth() + 16, img.getHeight() + 39);
+                    sized = true;
+                }
+                feedFrame.repaint();
             }
-
-            feedLabel.setIcon(new ImageIcon(toImage(annotated)));
-            feedFrame.repaint();
-
-            // expose the mask so you can tune HSV bounds
-            // NOTE: this requires you to make `mask` accessible in
-            // your ColorBlobDetector, e.g. package-private or via a
-            // getMask() method. Alternatively: duplicate the threshold
-            // logic here temporarily just for the debug view.
-            // Easiest quick hack: add `Mat getLastMask() { return mask; }`
-            // to your ColorBlobDetector, delete it when done.
-            Mat mask = det.getLastMask(); // add this method temporarily
-            if (mask != null && !mask.empty()) {
-                maskLabel.setIcon(new ImageIcon(toImage(mask)));
-                maskFrame.repaint();
-            }
-
-            Thread.sleep(30);
+            Thread.sleep(15);
         }
+        det.close();
+        if (pythonProcess != null && pythonProcess.isAlive()) {
+            pythonProcess.destroy();
+            System.out.println("[Main] Python process terminated.");
+        }
+    }
 
-        cam.stop();
+    private static void startFrameReceiver() {
+        Thread t = new Thread(() -> {
+            while (true) {
+                try {
+                    System.out.println("[FrameRx] Connecting to 127.0.0.1:" + FRAME_PORT + "...");
+                    Socket sock = new Socket("127.0.0.1", FRAME_PORT);
+                    DataInputStream dis = new DataInputStream(sock.getInputStream());
+                    java.io.OutputStream os = sock.getOutputStream();
+                    System.out.println("[FrameRx] Connected.");
+                    int frameCount = 0;
+                    while (true) {
+                        os.write(1);
+                        os.flush();
+                        int len = dis.readInt();           
+                        frameCount++;
+                        if (len > 0) {
+                            if (len > 10 * 1024 * 1024) {  
+                                throw new java.io.IOException("Frame too large: " + len);
+                            }
+                            byte[] jpeg = new byte[len];
+                            dis.readFully(jpeg);               
+                            BufferedImage img = ImageIO.read(new ByteArrayInputStream(jpeg));
+                            if (img != null) {
+                                latestFrame = img;
+                            }
+                        }
+                        Thread.sleep(16);                  
+                    }
+                } catch (Exception e) {
+                    System.err.println("[FrameRx] " + e.getMessage() + ". Retrying in 2s...");
+                    latestFrame = null;
+                    try { Thread.sleep(2000); } catch (InterruptedException ie) { break; }
+                }
+            }
+        });
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private static Process launchPython() {
+        File script = new File("main.py");
+        if (!script.exists()) {
+            System.err.println("[Main] ERROR: main.py not found in "
+                    + new File(".").getAbsolutePath());
+            System.err.println("[Main] Start it manually:  python main.py");
+            return null;
+        }
+        try {
+            String py = findPython();
+            System.out.println("[Main] Launching: " + py + " -u main.py");
+            ProcessBuilder pb = new ProcessBuilder(py, "-u", "main.py");
+            pb.directory(new File(".").getAbsoluteFile());
+            pb.redirectErrorStream(true);
+            Process proc = pb.start();
+            Thread pipe = new Thread(() -> {
+                try (BufferedReader br = new BufferedReader(
+                        new InputStreamReader(proc.getInputStream()))) {
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        System.out.println("[Python] " + line);
+                    }
+                } catch (Exception e) {  }
+                try {
+                    int exitCode = proc.waitFor();
+                    System.err.println("[Main] Python process exited with code " + exitCode);
+                } catch (Exception ignored) {}
+            });
+            pipe.setDaemon(true);
+            pipe.start();
+            try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+            if (!proc.isAlive()) {
+                System.err.println("[Main] Python exited with code " + proc.exitValue());
+                System.err.println("[Main] Run:  pip install mediapipe opencv-python");
+                return null;
+            }
+            System.out.println("[Main] Python process running.");
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                if (proc.isAlive()) {
+                    proc.destroy();
+                    System.out.println("[Main] Python cleaned up.");
+                }
+            }));
+            return proc;
+        } catch (Exception e) {
+            System.err.println("[Main] Failed to launch Python: " + e.getMessage());
+            System.err.println("[Main] Start it manually:  python main.py");
+            return null;
+        }
+    }
+
+    private static String findPython() {
+        for (String cmd : new String[]{"py", "python", "python3"}) {
+            try {
+                Process p = new ProcessBuilder(cmd, "--version")
+                        .redirectErrorStream(true).start();
+                BufferedReader br = new BufferedReader(
+                        new InputStreamReader(p.getInputStream()));
+                String ver = br.readLine();
+                int exit = p.waitFor();
+                if (exit == 0) {
+                    System.out.println("[Main] Found: " + cmd + " → " + ver);
+                    return cmd;
+                }
+            } catch (Exception ignored) {}
+        }
+        System.err.println("[Main] WARNING: python not found on PATH.");
+        return "python";
     }
 }
