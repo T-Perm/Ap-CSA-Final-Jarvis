@@ -40,7 +40,6 @@ public class SocketGestureDetector implements GestureDetector {
                                 latestGesture = new Gesture(type, x, y, conf);
                             }
                         } catch (Exception e) {
-                            // Ignore malformed lines
                         }
                     }
                 } catch (Exception e) {
@@ -61,7 +60,6 @@ public class SocketGestureDetector implements GestureDetector {
             if (reader != null) reader.close();
             if (socket != null) socket.close();
         } catch (Exception e) {
-            // Ignore close exceptions
         }
     }
 
@@ -72,7 +70,6 @@ public class SocketGestureDetector implements GestureDetector {
 
     @Override
     public Gesture detect() {
-        // Returns the latest gesture broadcasted from Python over the socket
         return latestGesture;
     }
 

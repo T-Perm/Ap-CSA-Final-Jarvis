@@ -1,0 +1,22 @@
+cc_binary(
+    name = "stark_mouse_jni.dll",
+    srcs = ["NativeGestureDetector.cc"],
+    linkshared = True,
+    deps = [
+        "@bazel_tools//tools/jdk:jni",
+        "//mediapipe/framework/port:logging",
+        "//mediapipe/framework/formats:image",
+        "//mediapipe/framework/formats:image_frame",
+        "//mediapipe/framework/formats:image_frame_opencv",
+        "//mediapipe/framework/port:opencv_highgui",
+        "//mediapipe/framework/port:opencv_imgproc",
+        "//mediapipe/framework/port:opencv_video",
+        "//mediapipe/tasks/cc/vision/hand_landmarker:hand_landmarker",
+        "//mediapipe/tasks/cc/vision/hand_landmarker:hand_landmarker_result",
+        "//mediapipe/tasks/cc/vision/core:running_mode",
+        "//mediapipe/tasks/cc/components/containers:landmark",
+        "//mediapipe/tasks/cc/components/containers:classification_result",
+        "//mediapipe/tasks/cc/components/containers:category",
+        "//mediapipe/tasks/cc/core:base_options",
+    ],
+)
