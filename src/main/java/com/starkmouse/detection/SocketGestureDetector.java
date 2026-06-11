@@ -4,21 +4,56 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.Socket;
 
-
+/**
+ * Socket-based gesture detector that connects to an external Python socket server.
+ * Used as a fallback or mock implementation.
+ */
 public class SocketGestureDetector implements GestureDetector {
+    /**
+     * Host address of the socket server.
+     */
     private final String host;
+
+    /**
+     * Port number of the socket server.
+     */
     private final int port;
+
+    /**
+     * TCP Socket object connected to the server.
+     */
     private Socket socket;
+
+    /**
+     * Reader to read stream lines from socket input.
+     */
     private BufferedReader reader;
+
+    /**
+     * Cache for the most recently received gesture.
+     */
     private volatile Gesture latestGesture = Gesture.none();
+
+    /**
+     * Flag indicating if the background receiver thread should keep running.
+     */
     private boolean running = true;
 
+    /**
+     * Constructs a SocketGestureDetector and initiates connection to host and port.
+     *
+     * @param host the remote server hostname
+     * @param port the remote server socket port
+     */
     public SocketGestureDetector(String host, int port) {
         this.host = host;
         this.port = port;
         startReceiver();
     }
 
+    /**
+     * Starts the daemon thread to establish socket connection and receive gesture logs.
+     */
     private void startReceiver() {
         Thread thread = new Thread(() -> {
             while (running) {
@@ -55,6 +90,9 @@ public class SocketGestureDetector implements GestureDetector {
         thread.start();
     }
 
+    /**
+     * Safely closes open TCP streams and socket connections.
+     */
     private synchronized void closeResources() {
         try {
             if (reader != null) reader.close();
@@ -63,16 +101,29 @@ public class SocketGestureDetector implements GestureDetector {
         }
     }
 
+    /**
+     * Terminates the background receiver thread and closes socket resources.
+     */
     public void close() {
         running = false;
         closeResources();
     }
 
+    /**
+     * Detects and returns the latest cached gesture.
+     *
+     * @return the latest Gesture received
+     */
     @Override
     public Gesture detect() {
         return latestGesture;
     }
 
+    /**
+     * Gets the name of the detector type.
+     *
+     * @return the name representation of this socket detector
+     */
     @Override
     public String getName() {
         return "Socket Detector";

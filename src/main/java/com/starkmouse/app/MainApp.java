@@ -15,37 +15,96 @@ import java.awt.event.MouseMotionAdapter;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 
+/**
+ * Main application class for StarkMouse. Initializes the Swing HUD, global hotkeys,
+ * and JNI tracker. Translates normalized hand landmark tracking coordinates to 
+ * system robot mouse movements and clicks.
+ */
 public class MainApp {
 
-    
+    /**
+     * Distance threshold to trigger a click pinch gesture (normalized coordinates).
+     */
     private static final double PINCH_THRESHOLD = 0.06;          
+
+    /**
+     * Distance threshold to release a click pinch gesture (normalized coordinates).
+     */
     private static final double PINCH_RELEASE_THRESHOLD = 0.09;  
+
+    /**
+     * Milliseconds delay before releasing a click to filter out coordinate drops.
+     */
     private static final long DEBOUNCE_MS = 100;                 
+
+    /**
+     * Minimum cooldown duration in milliseconds between consecutive clicks.
+     */
     private static final long COOLDOWN_MS = 200;                 
+
+    /**
+     * Exponential smoothing factor for cursor movement (0.0 to 1.0).
+     */
     private static final double SMOOTHING = 0.35;                
 
-    
+    /**
+     * Smoothed X coordinate of the mouse cursor.
+     */
     private static double smoothedX = 0;
+
+    /**
+     * Smoothed Y coordinate of the mouse cursor.
+     */
     private static double smoothedY = 0;
+
+    /**
+     * Flag indicating if the current coordinate is the first point of the tracker session.
+     */
     private static boolean isFirstPoint = true;
 
-    
+    /**
+     * Flag indicating if the left mouse button is currently pressed.
+     */
     private static boolean leftPressed = false;
+
+    /**
+     * System timestamp of the last left-click pinch event.
+     */
     private static long lastLeftPinchTime = 0;
+
+    /**
+     * System timestamp of the last left-click release event.
+     */
     private static long lastLeftReleaseTime = 0;
 
-    
+    /**
+     * Flag indicating if the right mouse button is currently pressed.
+     */
     private static boolean rightPressed = false;
+
+    /**
+     * System timestamp of the last right-click pinch event.
+     */
     private static long lastRightPinchTime = 0;
+
+    /**
+     * System timestamp of the last right-click release event.
+     */
     private static long lastRightReleaseTime = 0;
 
+    /**
+     * Application entry point. Configures the robot, sets up UI window components,
+     * registers global native listeners, and starts the webcam JNI tracking loop.
+     *
+     * @param args command-line arguments
+     * @throws Exception if system resources cannot be initialized
+     */
     public static void main(String[] args) throws Exception {
         System.out.println("[Main] Initializing Java StarkMouse Controller...");
 
         Robot robot = new Robot();
         Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
 
-        
         JFrame hudFrame = new JFrame("StarkMouse HUD");
         hudFrame.setUndecorated(true);
         hudFrame.setAlwaysOnTop(true);
@@ -55,7 +114,6 @@ public class MainApp {
         HudPanel hudPanel = new HudPanel();
         hudFrame.add(hudPanel);
 
-        
         final Point[] dragStart = { null };
         hudFrame.addMouseListener(new MouseAdapter() {
             @Override
@@ -77,10 +135,8 @@ public class MainApp {
             }
         });
 
-        
         SwingUtilities.invokeLater(() -> hudFrame.setVisible(true));
 
-        
         try {
             GlobalScreen.registerNativeHook();
             GlobalScreen.addNativeKeyListener(new NativeKeyListener() {
@@ -97,7 +153,6 @@ public class MainApp {
             System.err.println("[Main] Error registering global hotkey: " + ex.getMessage());
         }
 
-        
         NativeGestureDetector detector = new NativeGestureDetector((jpegBytes, landmarks) -> {
             BufferedImage bufferedImage = null;
             if (jpegBytes != null && jpegBytes.length > 0) {
@@ -110,7 +165,6 @@ public class MainApp {
             }
 
             if (landmarks != null && landmarks.length == 63) {
-                
                 double x = landmarks[9 * 3];
                 double y = landmarks[9 * 3 + 1];
 
@@ -128,8 +182,6 @@ public class MainApp {
 
                 robot.mouseMove((int) smoothedX, (int) smoothedY);
 
-                
-                
                 double leftDist = Math.sqrt(Math.pow(landmarks[4 * 3] - landmarks[8 * 3], 2) + 
                                             Math.pow(landmarks[4 * 3 + 1] - landmarks[8 * 3 + 1], 2));
                 double rightDist = Math.sqrt(Math.pow(landmarks[4 * 3] - landmarks[12 * 3], 2) + 
@@ -137,7 +189,6 @@ public class MainApp {
 
                 long now = System.currentTimeMillis();
 
-                
                 if (leftDist < PINCH_THRESHOLD) {
                     lastLeftPinchTime = now;
                     if (!leftPressed && (now - lastLeftReleaseTime >= COOLDOWN_MS)) {
@@ -152,7 +203,6 @@ public class MainApp {
                     }
                 }
 
-                
                 if (rightDist < PINCH_THRESHOLD) {
                     lastRightPinchTime = now;
                     if (!rightPressed && (now - lastRightReleaseTime >= COOLDOWN_MS)) {
@@ -167,11 +217,9 @@ public class MainApp {
                     }
                 }
             } else {
-                
                 isFirstPoint = true;
             }
 
-            
             BufferedImage finalImg = bufferedImage;
             SwingUtilities.invokeLater(() -> {
                 hudPanel.updateFrame(finalImg, landmarks, leftPressed, rightPressed);
@@ -182,7 +230,6 @@ public class MainApp {
         detector.startTracker();
         System.out.println("[Main] StarkMouse Controller running. Press Ctrl+Shift+G to toggle HUD window.");
 
-        
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("[Main] Stopping native tracker...");
             detector.stopTracker();
@@ -196,12 +243,34 @@ public class MainApp {
         }
     }
 
+    /**
+     * Swing Panel responsible for drawing the webcam frame overlayed with
+     * MediaPipe hand skeleton connections and telemetry.
+     */
     static class HudPanel extends JPanel {
+        /**
+         * The decoded webcam background image to render.
+         */
         private BufferedImage currentImage = null;
+
+        /**
+         * Array of 63 double coordinates representing the 21 hand landmarks.
+         */
         private double[] currentLandmarks = null;
+
+        /**
+         * State flag for drawing the left click pinch indicator.
+         */
         private boolean isLeftPinching = false;
+
+        /**
+         * State flag for drawing the right click pinch indicator.
+         */
         private boolean isRightPinching = false;
 
+        /**
+         * Index mapping tuples of landmark connections to draw the hand skeleton connections.
+         */
         private static final int[][] CONNECTIONS = {
             {0, 1}, {1, 2}, {2, 3}, {3, 4}, 
             {0, 5}, {5, 6}, {6, 7}, {7, 8}, 
@@ -211,6 +280,14 @@ public class MainApp {
             {5, 9}, {9, 13}, {13, 17} 
         };
 
+        /**
+         * Updates the HUD display elements with the latest tracked details and triggers repaint.
+         *
+         * @param img           the updated camera frame image
+         * @param landmarks     the tracking coordinate landmarks
+         * @param leftPinching  true if left pinch gesture is active
+         * @param rightPinching true if right pinch gesture is active
+         */
         public void updateFrame(BufferedImage img, double[] landmarks, boolean leftPinching, boolean rightPinching) {
             this.currentImage = img;
             this.currentLandmarks = landmarks;
@@ -219,6 +296,11 @@ public class MainApp {
             repaint();
         }
 
+        /**
+         * Paints the HUD panel overlay including webcam image, scan lines, landmarks, and click glows.
+         *
+         * @param g the Graphics context
+         */
         @Override
         protected void paintComponent(Graphics g) {
             super.paintComponent(g);
@@ -228,7 +310,6 @@ public class MainApp {
             int width = getWidth();
             int height = getHeight();
 
-            
             if (currentImage != null) {
                 g2d.drawImage(currentImage, 0, 0, width, height, null);
             } else {
@@ -238,11 +319,9 @@ public class MainApp {
                 g2d.drawString("Waiting for camera feed...", width / 2 - 70, height / 2);
             }
 
-            
             drawScanGrid(g2d, width, height);
             drawCornerBrackets(g2d, width, height);
 
-            
             g2d.setColor(new Color(0, 255, 255, 180));
             g2d.setFont(new Font("Monospaced", Font.BOLD, 11));
             if (currentLandmarks != null && currentLandmarks.length == 63) {
@@ -255,9 +334,7 @@ public class MainApp {
                 g2d.drawString(String.format("Status:          L-Click=%b R-Click=%b", isLeftPinching, isRightPinching), 15, 51);
             }
 
-            
             if (currentLandmarks != null && currentLandmarks.length == 63) {
-                
                 g2d.setStroke(new BasicStroke(2));
                 g2d.setColor(new Color(0, 255, 255, 150)); 
                 for (int[] conn : CONNECTIONS) {
@@ -270,7 +347,6 @@ public class MainApp {
                     g2d.drawLine(x1, y1, x2, y2);
                 }
 
-                
                 for (int i = 0; i < 21; i++) {
                     int x = (int) (currentLandmarks[i * 3] * width);
                     int y = (int) (currentLandmarks[i * 3 + 1] * height);
@@ -286,7 +362,6 @@ public class MainApp {
                     g2d.drawOval(x - 3, y - 3, 6, 6);
                 }
 
-                
                 if (isLeftPinching) {
                     drawPinchGlow(g2d, 4, 8, width, height, "LEFT CLICK");
                 }
@@ -296,6 +371,13 @@ public class MainApp {
             }
         }
 
+        /**
+         * Draws faint gridlines over the HUD panel to give it a tech appearance.
+         *
+         * @param g2d the Graphics2D context
+         * @param w   the width of the panel
+         * @param h   the height of the panel
+         */
         private void drawScanGrid(Graphics2D g2d, int w, int h) {
             g2d.setColor(new Color(0, 255, 255, 10)); 
             int step = 30;
@@ -307,29 +389,42 @@ public class MainApp {
             }
         }
 
+        /**
+         * Draws high-tech corner overlay brackets around the webcam HUD.
+         *
+         * @param g2d the Graphics2D context
+         * @param w   the width of the panel
+         * @param h   the height of the panel
+         */
         private void drawCornerBrackets(Graphics2D g2d, int w, int h) {
             g2d.setColor(new Color(0, 255, 255, 80)); 
             g2d.setStroke(new BasicStroke(2));
             int len = 15;
             int gap = 5;
 
-            
             g2d.drawLine(gap, gap, gap + len, gap);
             g2d.drawLine(gap, gap, gap, gap + len);
 
-            
             g2d.drawLine(w - gap, gap, w - gap - len, gap);
             g2d.drawLine(w - gap, gap, w - gap, gap + len);
 
-            
             g2d.drawLine(gap, h - gap, gap + len, h - gap);
             g2d.drawLine(gap, h - gap, gap, h - gap - len);
 
-            
             g2d.drawLine(w - gap, h - gap, w - gap - len, h - gap);
             g2d.drawLine(w - gap, h - gap, w - gap, h - gap - len);
         }
 
+        /**
+         * Draws an animated glow and text label centered on the pinch location.
+         *
+         * @param g2d   the Graphics2D context
+         * @param p1    landmark index 1
+         * @param p2    landmark index 2
+         * @param w     width of the panel
+         * @param h     height of the panel
+         * @param label descriptive label string
+         */
         private void drawPinchGlow(Graphics2D g2d, int p1, int p2, int w, int h, String label) {
             int x1 = (int) (currentLandmarks[p1 * 3] * w);
             int y1 = (int) (currentLandmarks[p1 * 3 + 1] * h);
