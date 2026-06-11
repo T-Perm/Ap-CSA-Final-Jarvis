@@ -10,8 +10,19 @@ StarkMouse is an advanced gesture-controlled cursor controller that allows users
 ### Prerequisites
 - **Java Runtime Environment (JRE) / JDK 17 or higher**
 - A working **Webcam**
-- Windows OS (64-bit) for native dynamic library compatibility (`stark_mouse_jni.dll` is included in the root)
-either run `run.bat` or run the command java -jar StarkMouse.jar in the `starkmouse_release` folder
+- Windows OS (64-bit) for native dynamic library compatibility (`stark_mouse_jni.dll` and `opencv_world3416.dll` must be in the project root directory)
+
+### How to Build and Run
+To build the project and execute the `MainApp` entry point:
+1. Open a terminal in the root directory.
+2. Compile and package the application:
+   ```powershell
+   mvn package
+   ```
+3. Run the generated executable JAR containing all dependencies:
+   ```powershell
+   java -jar target/stark-mouse-1.0.0-jar-with-dependencies.jar
+   ```
 
 
 
