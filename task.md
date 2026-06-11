@@ -1,0 +1,23 @@
+# StarkMouse — Java Gesture Detection & Swing HUD Task List
+
+- [x] C++ JNI Component
+    - [x] Rewrite `notify_java` to send JPEG bytes + `double[63]` landmarks (`onFrameAndLandmarksDetected("([B[D)V")`)
+    - [x] Resize frame to 480x360 and `cv::imencode` JPEG at 70% quality in `tracker_loop`
+    - [x] Add `opencv_imgcodecs` dep to `jni/BUILD`
+    - [x] Sync `jni/` copy with `mp_build` copy
+- [x] Java Detector Component
+    - [x] Replace `onGestureDetected` with `onFrameAndLandmarksDetected(byte[], double[])`
+    - [x] Add `FrameListener` interface and forward frame events
+- [x] Java Application & UI (MainApp.java)
+    - [x] Undecorated, always-on-top, draggable HUD JFrame (480x360)
+    - [x] HudPanel: camera frame, scan grid, corner brackets, landmarks, connections, pinch glow
+    - [x] Pinch gestures with hysteresis (start < 0.04, release > 0.06) + debounce/cooldown
+    - [x] Cursor tracking from Landmark 9 with exponential smoothing
+    - [x] JNativeHook Ctrl+Shift+G HUD toggle
+- [x] Build & Verification
+    - [x] `mvn compile` passes
+    - [x] Build project using `mvn package`
+    - [x] Rebuild `stark_mouse_jni.dll` with Bazel (mp_build environment) [NOT NEEDED - JNI ALREADY EXPORTS 21 LANDMARKS]
+    - [x] Copy new DLL to workspace root and confirm it exports the new callback
+    - [ ] Manual run: HUD shows feed, skeleton tracks, pinches click, hotkey toggles, scrolls page
+- [x] Update `walkthrough.md` with final results

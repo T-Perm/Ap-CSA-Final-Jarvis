@@ -23,29 +23,39 @@ import java.io.ByteArrayInputStream;
 public class MainApp {
 
     /**
-     * Distance threshold to trigger a click pinch gesture (normalized coordinates).
+     * Distance threshold to trigger a click pinch gesture.
      */
     private static final double PINCH_THRESHOLD = 0.06;          
 
     /**
-     * Distance threshold to release a click pinch gesture (normalized coordinates).
+     * Distance threshold to release a click pinch gesture.
      */
     private static final double PINCH_RELEASE_THRESHOLD = 0.09;  
 
     /**
-     * Milliseconds delay before releasing a click to filter out coordinate drops.
+     * Minimum delay in milliseconds before releasing a click to filter out coordinate drops.
      */
     private static final long DEBOUNCE_MS = 100;                 
 
     /**
-     * Minimum cooldown duration in milliseconds between consecutive clicks.
+     * Minimum cooldown duration in milliseconds between consecutive click releases.
      */
     private static final long COOLDOWN_MS = 200;                 
 
     /**
-     * Exponential smoothing factor for cursor movement (0.0 to 1.0).
+     * Exponential smoothing factor for cursor movement.
      */
     private static final double SMOOTHING = 0.35;                
+
+    /**
+     * Active tracking region bounds in normalized camera space [0, 1].
+     * Movement is scaled within this central box to cover the entire screen,
+     * reducing physical arm fatigue.
+     */
+    private static final double ACTIVE_REGION_MIN_X = 0.25;
+    private static final double ACTIVE_REGION_MAX_X = 0.75;
+    private static final double ACTIVE_REGION_MIN_Y = 0.25;
+    private static final double ACTIVE_REGION_MAX_Y = 0.75;
 
     /**
      * Smoothed X coordinate of the mouse cursor.
@@ -91,6 +101,16 @@ public class MainApp {
      * System timestamp of the last right-click release event.
      */
     private static long lastRightReleaseTime = 0;
+
+    /**
+     * Flag indicating if scroll mode is active.
+     */
+    private static boolean scrollActive = false;
+
+    /**
+     * Initial Y coordinate when scroll mode started.
+     */
+    private static double scrollStartY = 0;
 
     /**
      * Application entry point. Configures the robot, sets up UI window components,
@@ -168,61 +188,91 @@ public class MainApp {
                 double x = landmarks[9 * 3];
                 double y = landmarks[9 * 3 + 1];
 
-                double targetX = x * screenSize.width;
-                double targetY = y * screenSize.height;
+                // Scale normalized coordinates from the central active region to [0, 1]
+                double mappedX = (x - ACTIVE_REGION_MIN_X) / (ACTIVE_REGION_MAX_X - ACTIVE_REGION_MIN_X);
+                double mappedY = (y - ACTIVE_REGION_MIN_Y) / (ACTIVE_REGION_MAX_Y - ACTIVE_REGION_MIN_Y);
+                mappedX = Math.max(0.0, Math.min(1.0, mappedX));
+                mappedY = Math.max(0.0, Math.min(1.0, mappedY));
 
-                if (isFirstPoint) {
-                    smoothedX = targetX;
-                    smoothedY = targetY;
-                    isFirstPoint = false;
-                } else {
-                    smoothedX = smoothedX * (1.0 - SMOOTHING) + targetX * SMOOTHING;
-                    smoothedY = smoothedY * (1.0 - SMOOTHING) + targetY * SMOOTHING;
-                }
-
-                robot.mouseMove((int) smoothedX, (int) smoothedY);
+                double targetX = mappedX * screenSize.width;
+                double targetY = mappedY * screenSize.height;
 
                 double leftDist = Math.sqrt(Math.pow(landmarks[4 * 3] - landmarks[8 * 3], 2) + 
                                             Math.pow(landmarks[4 * 3 + 1] - landmarks[8 * 3 + 1], 2));
                 double rightDist = Math.sqrt(Math.pow(landmarks[4 * 3] - landmarks[12 * 3], 2) + 
                                              Math.pow(landmarks[4 * 3 + 1] - landmarks[12 * 3 + 1], 2));
+                double scrollDist = Math.sqrt(Math.pow(landmarks[4 * 3] - landmarks[20 * 3], 2) + 
+                                              Math.pow(landmarks[4 * 3 + 1] - landmarks[20 * 3 + 1], 2));
 
                 long now = System.currentTimeMillis();
 
-                if (leftDist < PINCH_THRESHOLD) {
-                    lastLeftPinchTime = now;
-                    if (!leftPressed && (now - lastLeftReleaseTime >= COOLDOWN_MS)) {
-                        robot.mousePress(InputEvent.BUTTON1_DOWN_MASK);
-                        leftPressed = true;
+                // Check for scroll activation first
+                if (scrollDist < PINCH_THRESHOLD) {
+                    if (!scrollActive && !leftPressed && !rightPressed) {
+                        scrollActive = true;
+                        scrollStartY = landmarks[9 * 3 + 1];
                     }
-                } else if (leftDist > PINCH_RELEASE_THRESHOLD) {
-                    if (leftPressed && (now - lastLeftPinchTime >= DEBOUNCE_MS)) {
-                        robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK);
-                        leftPressed = false;
-                        lastLeftReleaseTime = now;
-                    }
+                } else if (scrollDist > PINCH_RELEASE_THRESHOLD) {
+                    scrollActive = false;
                 }
 
-                if (rightDist < PINCH_THRESHOLD) {
-                    lastRightPinchTime = now;
-                    if (!rightPressed && (now - lastRightReleaseTime >= COOLDOWN_MS)) {
-                        robot.mousePress(InputEvent.BUTTON3_DOWN_MASK);
-                        rightPressed = true;
+                if (scrollActive) {
+                    double currentY = landmarks[9 * 3 + 1];
+                    double deltaY = currentY - scrollStartY;
+                    double step = 0.03; // movement required in normalized coordinates for 1 notch
+                    if (Math.abs(deltaY) >= step) {
+                        int ticks = (int) (deltaY / step);
+                        robot.mouseWheel(ticks);
+                        scrollStartY += ticks * step;
                     }
-                } else if (rightDist > PINCH_RELEASE_THRESHOLD) {
-                    if (rightPressed && (now - lastRightPinchTime >= DEBOUNCE_MS)) {
-                        robot.mouseRelease(InputEvent.BUTTON3_DOWN_MASK);
-                        rightPressed = false;
-                        lastRightReleaseTime = now;
+                } else {
+                    if (isFirstPoint) {
+                        smoothedX = targetX;
+                        smoothedY = targetY;
+                        isFirstPoint = false;
+                    } else {
+                        smoothedX = smoothedX * (1.0 - SMOOTHING) + targetX * SMOOTHING;
+                        smoothedY = smoothedY * (1.0 - SMOOTHING) + targetY * SMOOTHING;
+                    }
+
+                    robot.mouseMove((int) smoothedX, (int) smoothedY);
+
+                    if (leftDist < PINCH_THRESHOLD) {
+                        lastLeftPinchTime = now;
+                        if (!leftPressed && (now - lastLeftReleaseTime >= COOLDOWN_MS)) {
+                            robot.mousePress(InputEvent.BUTTON1_DOWN_MASK);
+                            leftPressed = true;
+                        }
+                    } else if (leftDist > PINCH_RELEASE_THRESHOLD) {
+                        if (leftPressed && (now - lastLeftPinchTime >= DEBOUNCE_MS)) {
+                            robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK);
+                            leftPressed = false;
+                            lastLeftReleaseTime = now;
+                        }
+                    }
+
+                    if (rightDist < PINCH_THRESHOLD) {
+                        lastRightPinchTime = now;
+                        if (!rightPressed && (now - lastRightReleaseTime >= COOLDOWN_MS)) {
+                            robot.mousePress(InputEvent.BUTTON3_DOWN_MASK);
+                            rightPressed = true;
+                        }
+                    } else if (rightDist > PINCH_RELEASE_THRESHOLD) {
+                        if (rightPressed && (now - lastRightPinchTime >= DEBOUNCE_MS)) {
+                            robot.mouseRelease(InputEvent.BUTTON3_DOWN_MASK);
+                            rightPressed = false;
+                            lastRightReleaseTime = now;
+                        }
                     }
                 }
             } else {
                 isFirstPoint = true;
+                scrollActive = false;
             }
 
             BufferedImage finalImg = bufferedImage;
             SwingUtilities.invokeLater(() -> {
-                hudPanel.updateFrame(finalImg, landmarks, leftPressed, rightPressed);
+                hudPanel.updateFrame(finalImg, landmarks, leftPressed, rightPressed, scrollActive);
             });
         });
 
@@ -246,6 +296,7 @@ public class MainApp {
     /**
      * Swing Panel responsible for drawing the webcam frame overlayed with
      * MediaPipe hand skeleton connections and telemetry.
+     * design co-authored by Claude Code and Antigravity. Logic all human made
      */
     static class HudPanel extends JPanel {
         /**
@@ -269,6 +320,11 @@ public class MainApp {
         private boolean isRightPinching = false;
 
         /**
+         * State flag for drawing the scroll pinch indicator.
+         */
+        private boolean isScrolling = false;
+
+        /**
          * Index mapping tuples of landmark connections to draw the hand skeleton connections.
          */
         private static final int[][] CONNECTIONS = {
@@ -288,11 +344,12 @@ public class MainApp {
          * @param leftPinching  true if left pinch gesture is active
          * @param rightPinching true if right pinch gesture is active
          */
-        public void updateFrame(BufferedImage img, double[] landmarks, boolean leftPinching, boolean rightPinching) {
+        public void updateFrame(BufferedImage img, double[] landmarks, boolean leftPinching, boolean rightPinching, boolean scrolling) {
             this.currentImage = img;
             this.currentLandmarks = landmarks;
             this.isLeftPinching = leftPinching;
             this.isRightPinching = rightPinching;
+            this.isScrolling = scrolling;
             repaint();
         }
 
@@ -329,9 +386,12 @@ public class MainApp {
                                             Math.pow(currentLandmarks[4 * 3 + 1] - currentLandmarks[8 * 3 + 1], 2));
                 double rightDist = Math.sqrt(Math.pow(currentLandmarks[4 * 3] - currentLandmarks[12 * 3], 2) + 
                                              Math.pow(currentLandmarks[4 * 3 + 1] - currentLandmarks[12 * 3 + 1], 2));
+                double scrollDist = Math.sqrt(Math.pow(currentLandmarks[4 * 3] - currentLandmarks[20 * 3], 2) + 
+                                              Math.pow(currentLandmarks[4 * 3 + 1] - currentLandmarks[20 * 3 + 1], 2));
                 g2d.drawString(String.format("L-Pinch (Index): %.3f", leftDist), 15, 25);
                 g2d.drawString(String.format("R-Pinch (Mid):   %.3f", rightDist), 15, 38);
-                g2d.drawString(String.format("Status:          L-Click=%b R-Click=%b", isLeftPinching, isRightPinching), 15, 51);
+                g2d.drawString(String.format("S-Pinch (Pinky): %.3f", scrollDist), 15, 51);
+                g2d.drawString(String.format("Status:          L-Click=%b R-Click=%b Scroll=%b", isLeftPinching, isRightPinching, isScrolling), 15, 64);
             }
 
             if (currentLandmarks != null && currentLandmarks.length == 63) {
@@ -367,6 +427,9 @@ public class MainApp {
                 }
                 if (isRightPinching) {
                     drawPinchGlow(g2d, 4, 12, width, height, "RIGHT CLICK");
+                }
+                if (isScrolling) {
+                    drawPinchGlow(g2d, 4, 20, width, height, "SCROLL MODE");
                 }
             }
         }

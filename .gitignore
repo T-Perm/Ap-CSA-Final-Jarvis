@@ -1,3 +1,19 @@
-
 hand_landmarker.task
 target/
+
+# Compiled Java class files
+*.class
+
+# IDE configurations
+.idea/
+*.iml
+.project
+.classpath
+.settings/
+.vscode/
+
+# Windows binaries and release packages
+*.exe
+*.zip
+output-exe/
+StarkMouse_Release/

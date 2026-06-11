@@ -1,7 +1,7 @@
 package com.starkmouse.detection;
 
 /**
- * JNI wrapper for the C++ MediaPipe gesture tracker.
+ * JNI wrapper for the OG C++ MediaPipe gesture tracker.
  * Loads the stark_mouse_jni library and handles frames and landmarks callbacks.
  */
 public class NativeGestureDetector {
@@ -40,7 +40,7 @@ public class NativeGestureDetector {
     }
 
     /**
-     * Callback method invoked from C++ native side to send frames and landmarks.
+     * Callback method invoked from the OG c++ library turned JNI native side to send frames and landmarks.
      *
      * @param jpegBytes raw JPEG frame data
      * @param landmarks hand landmark points
@@ -52,12 +52,12 @@ public class NativeGestureDetector {
     }
 
     /**
-     * Starts the native webcam and hand tracker loop in a separate C++ thread.
+     * Starts the native webcam and hand tracker loop in a separate thread.
      */
     public native void startTracker();
 
     /**
-     * Stops the native webcam and joins the tracker thread in C++.
+     * Stops the native webcam and joins the tracker thread.
      */
     public native void stopTracker();
 }
