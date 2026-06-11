@@ -13,6 +13,7 @@
 #include "mediapipe/framework/formats/image_frame_opencv.h"
 #include "mediapipe/framework/formats/image.h"
 #include "mediapipe/framework/port/opencv_highgui_inc.h"
+#include "mediapipe/framework/port/opencv_imgcodecs_inc.h"
 #include "mediapipe/framework/port/opencv_imgproc_inc.h"
 #include "mediapipe/framework/port/opencv_video_inc.h"
 
@@ -20,94 +21,36 @@ namespace mp_hl = mediapipe::tasks::vision::hand_landmarker;
 namespace mp_containers = mediapipe::tasks::components::containers;
 
 
-struct GestureState {
-    std::string type = "NONE";
-    double x = 0.0;
-    double y = 0.0;
-    double confidence = 0.0;
-};
-
-static std::mutex g_mutex;
-static GestureState g_state;
 static std::atomic<bool> g_running{false};
 static std::thread g_tracker_thread;
 static JavaVM* g_jvm = nullptr;
 static jobject g_detector_ref = nullptr;
 
+static void notify_java(JNIEnv* env, jobject detector, const uchar* jpeg_data, int jpeg_size, const double* coords, int size) {
+    jclass cls = env->GetObjectClass(detector);
+    jmethodID mid = env->GetMethodID(cls, "onFrameAndLandmarksDetected", "([B[D)V");
+    if (mid == nullptr) return;
 
-static int g_held_fingers = -1;
-static int64_t g_held_since = 0;
-static bool g_pen_fired = false;
-static bool g_toggle_fired = false;
-static const int64_t HOLD_PEN = 1000;
-static const int64_t HOLD_TOGGLE = 2000;
+    jbyteArray jframe = env->NewByteArray(jpeg_size);
+    if (jpeg_data != nullptr && jpeg_size > 0) {
+        env->SetByteArrayRegion(jframe, 0, jpeg_size, reinterpret_cast<const jbyte*>(jpeg_data));
+    }
+
+    jdoubleArray jarr = env->NewDoubleArray(size);
+    if (coords != nullptr && size > 0) {
+        env->SetDoubleArrayRegion(jarr, 0, size, coords);
+    }
+
+    env->CallVoidMethod(detector, mid, jframe, jarr);
+
+    env->DeleteLocalRef(jframe);
+    env->DeleteLocalRef(jarr);
+    env->DeleteLocalRef(cls);
+}
 
 static int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-
-static int count_fingers(const std::vector<mp_containers::NormalizedLandmark>& lm) {
-    int count = 0;
-    if (lm[8].y < lm[6].y) count++;
-    if (lm[12].y < lm[10].y) count++;
-    if (lm[16].y < lm[14].y) count++;
-    if (lm[20].y < lm[18].y) count++;
-    if (std::abs(lm[4].x - lm[5].x) > 0.08f) count++;
-    return count;
-}
-
-static std::string get_base_gesture(int f) {
-    if (f == 1) return "POINT";
-    if (f == 2) return "RIGHT_CLICK";
-    if (f == 3) return "LEFT_CLICK";
-    return "NONE";
-}
-
-static std::string apply_hold(int fingers) {
-    bool fist = (fingers == 0);
-    bool palm = (fingers >= 4);
-    int64_t now = now_ms();
-
-    if (fingers != g_held_fingers) {
-        g_held_fingers = fingers;
-        g_held_since = now;
-        g_pen_fired = false;
-        g_toggle_fired = false;
-        return get_base_gesture(fingers);
-    }
-
-    int64_t held_duration = now - g_held_since;
-
-    if (fist && held_duration >= HOLD_PEN && !g_pen_fired) {
-        g_pen_fired = true;
-        return "PEN_DOWN";
-    }
-
-    if (palm) {
-        if (held_duration >= HOLD_TOGGLE && !g_toggle_fired) {
-            g_toggle_fired = true;
-            return "SCRATCHPAD_TOGGLE";
-        } else if (held_duration >= HOLD_PEN && !g_pen_fired) {
-            g_pen_fired = true;
-            return "PEN_UP";
-        }
-    }
-
-    return get_base_gesture(fingers);
-}
-
-
-static void notify_java(JNIEnv* env, jobject detector,
-                         const std::string& type, double x, double y, double conf) {
-    jclass cls = env->GetObjectClass(detector);
-    jmethodID mid = env->GetMethodID(cls, "onGestureDetected",
-                                      "(Ljava/lang/String;DDD)V");
-    if (mid == nullptr) return;
-    jstring jtype = env->NewStringUTF(type.c_str());
-    env->CallVoidMethod(detector, mid, jtype, x, y, conf);
-    env->DeleteLocalRef(jtype);
-    env->DeleteLocalRef(cls);
 }
 
 static void tracker_loop() {
@@ -155,9 +98,15 @@ static void tracker_loop() {
 
         cv::flip(bgr_frame, bgr_frame, 1);
 
+        // Compress the BGR frame to JPEG for rendering in Swing HUD
+        std::vector<uchar> jpeg_buf;
+        cv::Mat resized_frame;
+        cv::resize(bgr_frame, resized_frame, cv::Size(480, 360));
+        std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 70};
+        cv::imencode(".jpg", resized_frame, jpeg_buf, params);
+
         cv::Mat rgb_frame;
         cv::cvtColor(bgr_frame, rgb_frame, cv::COLOR_BGR2RGB);
-
 
         auto mp_frame = std::make_shared<mediapipe::ImageFrame>(
             mediapipe::ImageFormat::SRGB,
@@ -172,15 +121,18 @@ static void tracker_loop() {
         last_ts = ts;
 
         auto result_or = landmarker->DetectForVideo(mp_image, ts);
-        if (!result_or.ok()) continue;
+        if (!result_or.ok()) {
+            // Even if landmark detection fails, notify Java with the camera frame
+            notify_java(env, g_detector_ref, jpeg_buf.data(), jpeg_buf.size(), nullptr, 0);
+            continue;
+        }
 
         auto& result = result_or.value();
 
-        std::string gesture_type = "NONE";
-        double cx = 0.0, cy = 0.0;
+        double coords[63];
+        int num_coords = 0;
 
         if (!result.hand_landmarks.empty()) {
-
             int target_idx = -1;
             for (int i = 0; i < (int)result.handedness.size(); i++) {
                 auto& cats = result.handedness[i].categories;
@@ -193,35 +145,16 @@ static void tracker_loop() {
 
             if (target_idx != -1) {
                 auto& lm = result.hand_landmarks[target_idx].landmarks;
-                cx = lm[9].x;
-                cy = lm[9].y;
-
-                int fingers = count_fingers(lm);
-                gesture_type = apply_hold(fingers);
-            } else {
-                g_held_fingers = -1;
-                g_pen_fired = false;
-                g_toggle_fired = false;
+                num_coords = 63;
+                for (int i = 0; i < 21; ++i) {
+                    coords[i * 3]     = lm[i].x;
+                    coords[i * 3 + 1] = lm[i].y;
+                    coords[i * 3 + 2] = lm[i].z;
+                }
             }
-        } else {
-            g_held_fingers = -1;
-            g_pen_fired = false;
-            g_toggle_fired = false;
         }
 
-
-        {
-            std::lock_guard<std::mutex> lock(g_mutex);
-            g_state.type = gesture_type;
-            g_state.x = cx;
-            g_state.y = cy;
-            g_state.confidence = (gesture_type == "NONE") ? 0.0 : 1.0;
-        }
-
-
-        notify_java(env, g_detector_ref, gesture_type, cx, cy,
-                    (gesture_type == "NONE") ? 0.0 : 1.0);
-
+        notify_java(env, g_detector_ref, jpeg_buf.data(), jpeg_buf.size(), coords, num_coords);
 
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }

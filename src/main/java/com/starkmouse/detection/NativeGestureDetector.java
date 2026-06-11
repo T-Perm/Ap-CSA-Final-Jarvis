@@ -2,13 +2,13 @@ package com.starkmouse.detection;
 
 public class NativeGestureDetector {
 
-    public interface GestureListener {
-        void onGesture(Gesture gesture);
+    public interface FrameListener {
+        void onFrameAndLandmarks(byte[] jpegBytes, double[] landmarks);
     }
 
-    private GestureListener listener;
+    private FrameListener listener;
 
-    public NativeGestureDetector(GestureListener listener) {
+    public NativeGestureDetector(FrameListener listener) {
         this.listener = listener;
     }
 
@@ -18,11 +18,9 @@ public class NativeGestureDetector {
         System.load(dllPath);
     }
 
-    public void onGestureDetected(String typeStr, double x, double y, double confidence) {
+    public void onFrameAndLandmarksDetected(byte[] jpegBytes, double[] landmarks) {
         if (listener != null) {
-            Gesture.Type type = Gesture.Type.valueOf(typeStr);
-            Gesture g = new Gesture(type, x, y, confidence);
-            listener.onGesture(g);
+            listener.onFrameAndLandmarks(jpegBytes, landmarks);
         }
     }
 
