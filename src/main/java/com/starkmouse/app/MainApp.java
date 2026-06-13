@@ -15,7 +15,7 @@ import java.awt.event.MouseMotionAdapter;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 
-/**
+/**@author Shaurya Mathur
  * Main application class for StarkMouse. Initializes the Swing HUD, global hotkeys,
  * and JNI tracker. Translates normalized hand landmark tracking coordinates to 
  * system robot mouse movements and clicks.
@@ -192,7 +192,6 @@ public class MainApp {
                 double mappedX = (x - ACTIVE_REGION_MIN_X) / (ACTIVE_REGION_MAX_X - ACTIVE_REGION_MIN_X);
                 double mappedY = (y - ACTIVE_REGION_MIN_Y) / (ACTIVE_REGION_MAX_Y - ACTIVE_REGION_MIN_Y);
                 mappedX = Math.max(0.0, Math.min(1.0, mappedX));
-                mappedY = Math.max(0.0, Math.min(1.0, mappedY));
 
                 double targetX = mappedX * screenSize.width;
                 double targetY = mappedY * screenSize.height;

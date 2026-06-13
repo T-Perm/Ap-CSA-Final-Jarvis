@@ -4,6 +4,7 @@ package com.starkmouse.detection;
  * JNI wrapper for the OG C++ MediaPipe gesture tracker.
  * Loads the stark_mouse_jni library and handles frames and landmarks callbacks.
  */
+//@author Shaurya Mathur
 public class NativeGestureDetector {
 
     /**
@@ -44,6 +45,7 @@ public class NativeGestureDetector {
      *
      * @param jpegBytes raw JPEG frame data
      * @param landmarks hand landmark points
+     * @author Shaurya Mathur
      */
     public void onFrameAndLandmarksDetected(byte[] jpegBytes, double[] landmarks) {
         if (listener != null) {
@@ -53,6 +55,7 @@ public class NativeGestureDetector {
 
     /**
      * Starts the native webcam and hand tracker loop in a separate thread.
+     * @author Shaurya Mathur
      */
     public native void startTracker();
 
