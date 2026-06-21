@@ -9,7 +9,7 @@ StarkMouse is an advanced gesture-controlled cursor controller that allows users
 
 **[Download StarkMouse.zip](https://github.com/T-Perm/Ap-CSA-Final-Jarvis/releases/latest/download/StarkMouse.zip)**
 
-No Java or build tools required — extract the zip and run `StarkMouse.exe` from inside the extracted folder.
+No Java or build tools required — extract the zip and double-click `run.bat`.
 
 ---
 
@@ -21,10 +21,8 @@ No Java or build tools required — extract the zip and run `StarkMouse.exe` fro
 
 ### Quick Start (Pre-built Binary)
 1. Download `StarkMouse.zip` from the link above.
-2. Extract the **entire zip** into a folder — do not move `StarkMouse.exe` out of the extracted folder.
-3. Double-click `StarkMouse.exe` from inside that folder to launch.
-
-> **Note:** The EXE must stay alongside `stark_mouse_jni.dll`, `opencv_world3416.dll`, `hand_landmarker.task`, and the `app/`/`runtime/` folders. Moving just the EXE elsewhere will cause it to silently do nothing.
+2. Extract the **entire zip** into a folder.
+3. Double-click `run.bat` to launch.
 
 ### How to Build from Source
 To build the project and execute the `MainApp` entry point:
