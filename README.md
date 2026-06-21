@@ -9,7 +9,7 @@ StarkMouse is an advanced gesture-controlled cursor controller that allows users
 
 **[Download StarkMouse.zip](https://github.com/T-Perm/Ap-CSA-Final-Jarvis/releases/latest/download/StarkMouse.zip)**
 
-No Java or build tools required — extract the zip and double-click `run.bat`.
+Requires **Java 17+** — extract the zip and double-click `run.bat`.
 
 ---
 
@@ -18,10 +18,11 @@ No Java or build tools required — extract the zip and double-click `run.bat`.
 ### Prerequisites
 - A working **Webcam**
 - Windows OS (64-bit)
+- **Java 17 or newer** installed ([download here](https://www.oracle.com/java/technologies/downloads/))
 
 ### Quick Start (Pre-built Binary)
 1. Download `StarkMouse.zip` from the link above.
-2. Extract the **entire zip** into a folder.
+2. Extract the zip into a folder.
 3. Double-click `run.bat` to launch.
 
 ### How to Build from Source
