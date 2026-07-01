@@ -9,7 +9,7 @@ StarkMouse is an advanced gesture-controlled cursor controller that allows users
 
 **[Download StarkMouse.zip](https://github.com/T-Perm/Ap-CSA-Final-Jarvis/releases/latest/download/StarkMouse.zip)**
 
-Requires **Java 17+** — extract the zip and double-click `run.bat`.
+No Java installation required — Java runtime is bundled inside the zip.
 
 ---
 
@@ -18,12 +18,13 @@ Requires **Java 17+** — extract the zip and double-click `run.bat`.
 ### Prerequisites
 - A working **Webcam**
 - Windows OS (64-bit)
-- **Java 17 or newer** installed ([download here](https://www.oracle.com/java/technologies/downloads/))
 
 ### Quick Start (Pre-built Binary)
 1. Download `StarkMouse.zip` from the link above.
 2. Extract the zip into a folder.
-3. Double-click `run.bat` to launch.
+3. Double-click **`StarkMouse.exe`** to launch.
+
+> **Note:** Do not run `StarkMouse.jar` directly. The `.exe` launcher sets the correct working directory so the hand-tracking model and native DLLs are found.
 
 ### How to Build from Source
 To build the project and execute the `MainApp` entry point:
@@ -33,7 +34,7 @@ To build the project and execute the `MainApp` entry point:
    ```powershell
    mvn package
    ```
-4. Run the generated executable JAR containing all dependencies:
+4. Run from the project root so relative DLL and model paths resolve correctly:
    ```powershell
    java -jar target/stark-mouse-1.0.0-jar-with-dependencies.jar
    ```
